@@ -451,8 +451,7 @@ static long seemp_logk_reserve_rdblks(
 		}
 
 		finish_wait(&sdev->readers_wq, &read_wait);
-		if (ret) {
-			mutex_unlock(&sdev->lock);
+		if (ret)
 			return -EINTR;
 	}
 
