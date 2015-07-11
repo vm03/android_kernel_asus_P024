@@ -57,3 +57,4 @@ obj-$(CONFIG_COMPAT) += mdss_compat_utils.o
 	obj-$(CONFIG_SONY_CADIZ) += cadiz.o
 #endif
 # cadiz -----
+obj-$(CONFIG_FB_MSM_MDSS) += mdss_livedisplay.o
