@@ -43,6 +43,19 @@ static void disk_add_events(struct gendisk *disk);
 static void disk_del_events(struct gendisk *disk);
 static void disk_release_events(struct gendisk *disk);
 
+int disk_is_media_present(struct gendisk *disk)
+{
+    const struct block_device_operations *ops;
+    if (!disk || (ops = disk->fops) == NULL)
+        return -1;
+
+    if (ops->is_media_present) {
+        return ops->is_media_present(disk);
+    }
+    return 1;
+}
+EXPORT_SYMBOL_GPL(disk_is_media_present);
+
 /**
  * disk_get_part - get partition
  * @disk: disk to look partition from

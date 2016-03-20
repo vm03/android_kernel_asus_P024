@@ -91,6 +91,9 @@ enum power_supply_property {
 	/* Properties of type `int' */
 	POWER_SUPPLY_PROP_STATUS = 0,
 	POWER_SUPPLY_PROP_CHARGE_TYPE,
+#if defined(CONFIG_Z380C) || defined(CONFIG_Z380KL)
+	POWER_SUPPLY_PROP_PACK_TYPE,
+#endif
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_ONLINE,
@@ -186,6 +189,11 @@ enum power_supply_type {
 	POWER_SUPPLY_TYPE_WIRELESS,	/* Accessory Charger Adapters */
 	POWER_SUPPLY_TYPE_BMS,		/* Battery Monitor System */
 	POWER_SUPPLY_TYPE_USB_PARALLEL,		/* USB Parallel Path */
+	POWER_SUPPLY_TYPE_PACK_BATTERY,		/* chris: add for Cover Pack Battery */
+	POWER_SUPPLY_TYPE_PACK_AC,		/* chris: add for Cover Pack Battery */
+	POWER_SUPPLY_TYPE_OTG,		/* OTG */
+	POWER_SUPPLY_TYPE_OTGOUT,	/* OTGOUT */
+	POWER_SUPPLY_TYPE_POWERBACK, /*POWERBACK*/
 };
 
 union power_supply_propval {

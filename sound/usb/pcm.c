@@ -21,6 +21,9 @@
 #include <linux/usb.h>
 #include <linux/usb/audio.h>
 #include <linux/usb/audio-v2.h>
+#include <linux/timer.h>
+#include <linux/workqueue.h>
+#include <linux/delay.h>
 
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -38,6 +41,54 @@
 
 #define SUBSTREAM_FLAG_DATA_EP_STARTED	0
 #define SUBSTREAM_FLAG_SYNC_EP_STARTED	1
+
+///////// for CM6206LX //////////
+struct snd_usb_substream *g_subs;	
+static int g_state;
+
+static int SetCmediaGPIO(struct snd_usb_audio *chip, int flag)
+{
+	int err = -1;
+	int dwTemp = (0x20) | (0x3012 << 8) | (0x01 << 24); // flag == 0
+	
+	if(flag == 1)
+	{
+		dwTemp = (0x20) | (0x3032 << 8) | (0x01 << 24);
+	}
+	else
+	{
+		dwTemp = (0x20) | (0x3012 << 8) | (0x01 << 24);
+	}
+	
+	if (chip->shutdown == 1 || chip->dev == NULL) {
+		snd_printk(KERN_ERR "%s : CA81 is shutdown, skip\n", __func__);
+		return 0;
+	}	
+
+	if ((err = snd_usb_ctl_msg(chip->dev, usb_sndctrlpipe(chip->dev, 0),
+					0x09,   // request
+					USB_TYPE_CLASS | USB_RECIP_INTERFACE | USB_DIR_OUT, // requesttype
+					0x0200, // value
+					0x0003, // index
+				   &dwTemp, sizeof(int))) < 0)
+	{
+		snd_printk(KERN_ERR "SetCmediaGPIO flat %d error\n", flag);
+	}
+
+	return err;
+}
+
+static void cmedia_gpio_work(struct work_struct *work)
+{
+	if (g_state == 1)
+		SetCmediaGPIO(g_subs->stream->chip, 1);
+	else if (g_state == 0)
+		SetCmediaGPIO(g_subs->stream->chip, 0);
+
+}
+
+static DECLARE_DELAYED_WORK(set_cmedia_gpio_work, cmedia_gpio_work);
+
 
 /* return the estimated delay based on USB frame counters */
 snd_pcm_uframes_t snd_usb_pcm_delay(struct snd_usb_substream *subs,
@@ -218,6 +269,7 @@ int snd_usb_init_pitch(struct snd_usb_audio *chip, int iface,
 	}
 }
 
+
 static int start_endpoints(struct snd_usb_substream *subs, bool can_sleep)
 {
 	int err;
@@ -352,6 +404,27 @@ static int set_format(struct snd_usb_substream *subs, struct audioformat *fmt)
 
 		snd_usb_set_interface_quirk(dev);
 	}
+
+/*
+	///////// for CM6206LX //////////
+	if(subs->altset_idx != 0)
+	{
+		//if(chip->usb_id == USB_ID(0x294b, 0x1006))
+		if(subs->stream->chip->usb_id == USB_ID(0x0d8c, 0x0102))
+		{
+			SetCmediaGPIO(subs->stream->chip, 1);
+		}
+	}
+	else
+	{
+		//if(chip->usb_id == USB_ID(0x294b, 0x1006))
+		if(subs->stream->chip->usb_id == USB_ID(0x0d8c, 0x0102))
+		{
+			SetCmediaGPIO(subs->stream->chip, 0);
+		}
+	}
+*/
+	//////////////////////
 
 	subs->data_endpoint = snd_usb_add_endpoint(subs->stream->chip,
 						   alts, fmt->endpoint, subs->direction,
@@ -1115,6 +1188,8 @@ static int snd_usb_pcm_open(struct snd_pcm_substream *substream, int direction)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_usb_substream *subs = &as->substream[direction];
 
+	pr_debug("%s\n", __func__);
+
 	subs->interface = -1;
 	subs->altset_idx = 0;
 	runtime->hw = snd_usb_hardware;
@@ -1134,6 +1209,8 @@ static int snd_usb_pcm_close(struct snd_pcm_substream *substream, int direction)
 {
 	struct snd_usb_stream *as = snd_pcm_substream_chip(substream);
 	struct snd_usb_substream *subs = &as->substream[direction];
+	
+	pr_debug("%s\n", __func__);
 
 	stop_endpoints(subs, true);
 
@@ -1144,7 +1221,12 @@ static int snd_usb_pcm_close(struct snd_pcm_substream *substream, int direction)
 
 	subs->pcm_substream = NULL;
 	snd_usb_autosuspend(subs->stream->chip);
-
+/*	
+	if(subs->stream->chip->usb_id == USB_ID(0x0d8c, 0x0102) && subs->stream->chip->shutdown != 1)
+	{
+		SetCmediaGPIO(subs->stream->chip, 0);
+	}
+*/	
 	return 0;
 }
 
@@ -1461,14 +1543,32 @@ static int snd_usb_substream_playback_trigger(struct snd_pcm_substream *substrea
 {
 	struct snd_usb_substream *subs = substream->runtime->private_data;
 
+	pr_debug("%s : cmd %d shutdown %d\n", __func__, cmd, subs->stream->chip->shutdown);
+
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 		subs->data_endpoint->prepare_data_urb = prepare_playback_urb;
 		subs->data_endpoint->retire_data_urb = retire_playback_urb;
 		subs->running = 1;
+		// cmedia
+		if(subs->stream->chip->usb_id == USB_ID(0x0d8c, 0x0102) && subs->stream->chip->shutdown != 1)
+		{
+			g_subs = subs;
+			g_state = 1;
+			schedule_delayed_work(&set_cmedia_gpio_work, msecs_to_jiffies(160));
+		}
 		return 0;
 	case SNDRV_PCM_TRIGGER_STOP:
+		/* CM6206LX */
+		// joe_cheng : if usb cable is plugged, SNDRV_PCM_TRIGGER_STOP is not called.
+		if(subs->stream->chip->usb_id == USB_ID(0x0d8c, 0x0102) && subs->stream->chip->shutdown != 1)
+		{
+			g_subs = subs;
+			g_state = 0;
+			schedule_delayed_work(&set_cmedia_gpio_work, msecs_to_jiffies(160));
+		}
+		
 		stop_endpoints(subs, false);
 		subs->running = 0;
 		return 0;

@@ -19,6 +19,7 @@
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
+#include <linux/mmc/mmc.h>
 
 #include "core.h"
 #include "mmc_ops.h"
@@ -686,6 +687,83 @@ static const struct file_operations mmc_dbg_bkops_stats_fops = {
 	.write		= mmc_bkops_stats_write,
 };
 
+/* set the read pointer of ext_csd[] */
+static u16 ext_csd_byte_offset;
+static ssize_t mmc_ext_csd_offset_write(struct file *filp,
+                                        const char __user *buf,
+                                        size_t count,
+                                        loff_t *ppos)
+{
+        struct mmc_card *card = filp->private_data;
+        int number;
+        u16 offset;
+
+        if (!card || mmc_card_sd(card))
+                return -EIO;
+
+        sscanf(buf, "%d", &number);
+        offset = (u16)number;
+
+        if (offset < 512) {
+                ext_csd_byte_offset = offset;
+                pr_info("%s: set offset = %d\n", __func__, offset);
+        }
+        else
+                pr_err("%s: set offset = %d, out of range\n", __func__, offset);
+
+        return count;
+}
+
+static ssize_t mmc_ext_csd_offset_read(struct file *filp, char __user *ubuf,
+                                       size_t cnt, loff_t *ppos)
+{
+        struct mmc_card *card = filp->private_data;
+        char buf[32];
+        u8 *ext_csd;
+        int err;
+
+        if (!card || mmc_card_sd(card) || ext_csd_byte_offset >= 512)
+                return -EIO;
+
+        ext_csd = kmalloc(512, GFP_KERNEL);
+        if (!ext_csd)
+                return -ENOMEM;
+
+        mmc_claim_host(card->host);
+        err = mmc_send_ext_csd(card, ext_csd);
+        mmc_release_host(card->host);
+        if (err)
+                goto out_free;
+
+        snprintf(buf, sizeof(buf), "ext_csd[%d] = 0x%02x\n", ext_csd_byte_offset, (u8)ext_csd[ext_csd_byte_offset]);
+        kfree(ext_csd);
+
+        return simple_read_from_buffer(ubuf, cnt, ppos,
+                                       buf, sizeof(buf));
+out_free:
+        kfree(ext_csd);
+        return err;
+}
+
+static int mmc_ext_csd_offset_open(struct inode *inode, struct file *filp)
+{
+        filp->private_data = inode->i_private;
+        return 0;
+}
+
+static int mmc_ext_csd_offset_release(struct inode *inode, struct file *file)
+{
+        return 0;
+}
+
+static const struct file_operations mmc_dbg_ext_csd_offset_fops = {
+        .open	 = mmc_ext_csd_offset_open,
+        .read	 = mmc_ext_csd_offset_read,
+        .release = mmc_ext_csd_offset_release,
+        .write   = mmc_ext_csd_offset_write,
+        .llseek	 = default_llseek,
+};
+
 void mmc_add_card_debugfs(struct mmc_card *card)
 {
 	struct mmc_host	*host = card->host;
@@ -730,7 +808,12 @@ void mmc_add_card_debugfs(struct mmc_card *card)
 					 &mmc_dbg_bkops_stats_fops))
 			goto err;
 
-	return;
+	if (mmc_card_mmc(card)) {
+            if (!debugfs_create_file("ext_csd_offset", S_IRUSR, root, card,
+                                     &mmc_dbg_ext_csd_offset_fops))
+                    goto err;
+    }
+    return;
 
 err:
 	debugfs_remove_recursive(root);

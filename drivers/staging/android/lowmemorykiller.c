@@ -45,6 +45,10 @@
 #include <linux/fs.h>
 #include <linux/cpuset.h>
 #include <linux/show_mem_notifier.h>
+#include <linux/hugetlb_inline.h>
+#include <linux/workqueue.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 
 #ifdef CONFIG_HIGHMEM
 #define _ZONE ZONE_HIGHMEM
@@ -59,6 +63,12 @@ static short lowmem_adj[6] = {
 	6,
 	12,
 };
+
+u8 empty_slot = 0xff;           /* bit[n] = 0, means there is no task
+                                 * which adj is great or equal to the binded
+                                 * lowmem_adj[x] */
+unsigned long jiffies_empty_slot = INITIAL_JIFFIES;
+
 static int lowmem_adj_size = 4;
 static int lowmem_minfree[6] = {
 	3 * 512,	/* 6MB */
@@ -70,12 +80,185 @@ static int lowmem_minfree_size = 4;
 static int lmk_fast_run = 1;
 
 static unsigned long lowmem_deathpending_timeout;
+static unsigned long dump_meminfo_timeout;
+static struct workqueue_struct *dumpmem_workqueue;
+static void dump_meminfo(struct work_struct *work);
+static DECLARE_WORK(dumpmem_work, dump_meminfo);
 
 #define lowmem_print(level, x...)			\
 	do {						\
 		if (lowmem_debug_level >= (level))	\
 			pr_info(x);			\
 	} while (0)
+
+DEFINE_MUTEX(profile_mutex);
+
+struct profile
+{
+    unsigned long timeout;
+    unsigned long nr_to_scan;   /* summation of sc->nr_to_scan in time period */
+    int fire;                   /* numbers of call for LMK shrinker */
+    int select;                 /* numbers of killing */
+    int reason_adj_max;         /* escape reason: min_score_adj == OOM_SCORE_ADJ_MAX + 1 */
+    int reason_tif_memdie;      /* escape reason: selecting a teriminating task */
+    int reason_nop;             /* escape reason: no operation + selected */
+    int ofree;
+    int ofile;
+    unsigned long pressure;     /* pressure for previous profile */
+};
+
+static struct profile g_lmk_profile = {
+        .timeout = INITIAL_JIFFIES,
+};
+
+#define LMK_PROFILE_INTERVAL (0.25)
+//Lower bound for cache = 56MB
+#define LMK_LOW_BOUND_CACHE 14336
+#define LMK_LOW_BOUND_NR 20
+#define LMK_LOW_BOUND_FIRE ((unsigned long)(4000*LMK_PROFILE_INTERVAL))
+
+/* standardize memory pressure: 0~10 */
+#define standardize_lmk_pressure(p)                         \
+    do {                                                    \
+        p = (p/(LMK_LOW_BOUND_NR*LMK_LOW_BOUND_FIRE/10));   \
+        if (p > 10)                                         \
+            p = 10;                                         \
+    } while(0)
+
+#define profile_reset(p)                               \
+    do {                                               \
+        memset(p, 0, sizeof(struct profile));          \
+        p->timeout = jiffies + (unsigned long)(LMK_PROFILE_INTERVAL*HZ); \
+    } while(0)
+
+static int profile_show(struct profile *p, u8 task_bitmap_mask)
+{
+    int retv = 0;
+    int pressure;
+    unsigned long sp;
+
+    if (p->timeout == INITIAL_JIFFIES) {
+        lowmem_print(2, "totalreserve_pages=%lu, LMK_LOW_BOUND_FIRE=%lu\n", totalreserve_pages, LMK_LOW_BOUND_FIRE);
+        profile_reset(p);
+        return 0;
+    }
+
+    task_bitmap_mask >>= 1;     /* excludes the most important processes. */
+    mutex_lock(&profile_mutex);
+    if (p->fire > 0 && time_after(jiffies, p->timeout)) {
+        pressure = p->nr_to_scan;
+        lowmem_print(2, "efficicy: kill=%d, shrink=%d, adj_max=%d, memdie=%d, nop=%d, ofree=%d, ofile=%d, pressure=%d\n",
+                     p->select, p->fire, p->reason_adj_max, p->reason_tif_memdie,
+                     p->reason_nop - p->select,
+                     p->ofree/p->fire, p->ofile/p->fire, pressure);
+
+        if (p->select == 0) {
+                /* No killed process in previous profiling */
+                sp = pressure;
+                standardize_lmk_pressure(sp);
+                switch (sp) {
+                case 10:
+                        /* Highest pressure score.
+                         * Basically, we want to selection some one to be killed. */
+                        retv = 1;
+                        if ((empty_slot & task_bitmap_mask) == 0 &&
+                            (p->ofile/p->fire > LMK_LOW_BOUND_CACHE))
+                                /* All other than foreground app has been killed
+                                 * Force selection when cache pages is low enough.
+                                 * This prevent killing the FG app soon, but it may
+                                 * cause system lags because low memory. */
+                                retv = 0;
+                        break;
+                case 9:
+                case 8:
+                case 7:
+                case 6:
+                        /* Higher pressure score.
+                         * Kill some one that is not a FG process */
+                        if (empty_slot & task_bitmap_mask)
+                                retv = 1;
+                        break;
+                default:;
+                }
+                if (retv)
+                        lowmem_print(1, "force selecting(p:%lu, ofile: %u)\n", sp, p->ofile/p->fire);
+        }
+        profile_reset(p);
+        p->pressure = pressure;
+    }
+    mutex_unlock(&profile_mutex);
+    return retv;
+}
+
+#define PSS_SHIFT 12
+struct mem_size_stats {
+    struct vm_area_struct *vma;
+    unsigned long resident;
+    unsigned long shared_clean;
+    unsigned long shared_dirty;
+    unsigned long private_clean;
+    unsigned long private_dirty;
+    unsigned long referenced;
+    unsigned long anonymous;
+    unsigned long anonymous_thp;
+    unsigned long swap;
+    unsigned long nonlinear;
+    u64 pss;
+};
+
+#if 0
+static unsigned long get_mm_pss(struct mm_struct *mm)
+{
+    unsigned long pss;
+    struct vm_area_struct *vma = mm->mmap;
+    struct mem_size_stats mss;
+    struct mm_walk smaps_walk = {
+            .pmd_entry = smaps_pte_range,
+            .mm = vma->vm_mm,
+            .private = &mss,
+    };
+    memset(&mss, 0, sizeof(struct mem_size_stats));
+    while (vma)
+    {
+        mss.vma = vma;
+        if (vma->vm_mm && !is_vm_hugetlb_page(vma))
+            walk_page_range(vma->vm_start, vma->vm_end, &smaps_walk);
+        vma = vma->vm_next;
+    }
+    pss = (unsigned long)(mss.pss >> (10 + PSS_SHIFT));
+    return pss;
+}
+#endif
+
+static void dump_meminfo(struct work_struct *work)
+{
+    struct task_struct *tsk;
+    int tasksize;
+
+    lowmem_print(1,"This is dump by LMK while adj = 0\n");
+
+    for_each_process(tsk){
+        struct task_struct *p;
+        int oom_score_adj;
+
+        if (tsk->flags & PF_KTHREAD)
+            continue;
+
+        p = find_lock_task_mm(tsk);
+        if (!p)
+            continue;
+
+        oom_score_adj = p->signal->oom_score_adj;
+
+        tasksize = get_mm_rss(p->mm);
+
+        task_unlock(p);
+        if (tasksize <= 0)
+            continue;
+        lowmem_print(1, "PID:%d P_Name:%s Adj:%d Size:%d KB\n"
+          ,p->pid, p->comm, oom_score_adj, tasksize *4);
+    }
+}
 
 static int test_task_flag(struct task_struct *p, int flag)
 {
@@ -265,17 +448,23 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 {
 	struct task_struct *tsk;
 	struct task_struct *selected = NULL;
+	struct task_struct *selected_qos = NULL;
 	int rem = 0;
 	int tasksize;
 	int i;
 	short min_score_adj = OOM_SCORE_ADJ_MAX + 1;
 	int minfree = 0;
-	int selected_tasksize = 0;
-	short selected_oom_score_adj;
+        int selected_tasksize = 0, selected_qos_tasksize;
+        short selected_oom_score_adj, selected_qos_oom_score_adj;
+        bool selected_mark_as_prefer_kill = 0;
 	int array_size = ARRAY_SIZE(lowmem_adj);
 	int other_free;
 	int other_file;
 	unsigned long nr_to_scan = sc->nr_to_scan;
+        int force_select = 0;
+        u8 task_bitmap = 0;          /* bitmap indicates the associated adj category is empty or not */
+        u8 task_bitmap_mask = 0;
+        u8 candidate_slot = 0;
 
 	if (nr_to_scan > 0) {
 		if (mutex_lock_interruptible(&scan_mutex) < 0)
@@ -305,21 +494,70 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 			break;
 		}
 	}
-	if (nr_to_scan > 0)
-		lowmem_print(3, "lowmem_shrink %lu, %x, ofree %d %d, ma %hd\n",
-				nr_to_scan, sc->gfp_mask, other_free,
-				other_file, min_score_adj);
+        switch (array_size) {
+            case 6:
+                task_bitmap_mask = 0x3f;
+                break;
+            case 4:
+                task_bitmap_mask = 0x0f;
+                break;
+            default:
+                pr_info("array size of lowmem_minfree_size should be 4 or 6\n");
+                WARN_ON(1);
+        }
+
+        force_select = profile_show(&g_lmk_profile, task_bitmap_mask);
+        if (force_select > 0) {
+                min_score_adj = lowmem_adj[0];
+        }
+        else {
+                candidate_slot = task_bitmap_mask;
+                for (i = 0; i < array_size; i++) {
+                        minfree = lowmem_minfree[i];
+                        if (other_free < minfree && other_file < minfree) {
+                                min_score_adj = lowmem_adj[i];
+                                break;
+                        }
+                candidate_slot >>= 1;
+                }
+
+                if (min_score_adj < OOM_SCORE_ADJ_MAX + 1) {
+                        mutex_lock(&profile_mutex);
+                        /* want to select something
+                        * We check whether the empty timestamp is out of date. */
+                        if ((empty_slot & candidate_slot) == 0 &&
+                                jiffies_empty_slot != INITIAL_JIFFIES &&
+                                time_before_eq(jiffies, jiffies_empty_slot)) {
+                                lowmem_print(3, "skip selection (adj: %d, time remains: %u ms)\n",
+                                        min_score_adj, jiffies_to_msecs(jiffies_empty_slot - jiffies));
+                                min_score_adj = OOM_SCORE_ADJ_MAX + 1;
+                        }
+                        mutex_unlock(&profile_mutex);
+                }
+        }
+        g_lmk_profile.fire++;
+        g_lmk_profile.ofree += other_free;
+        g_lmk_profile.ofile += other_file;
+
+         if (sc->nr_to_scan > 0) {
+                g_lmk_profile.nr_to_scan += sc->nr_to_scan;
+
+                lowmem_print(3, "lowmem_shrink %lu, %x, ofree %d %d, ma %hd\n",
+                                sc->nr_to_scan, sc->gfp_mask, other_free,
+                                other_file, min_score_adj);
+        }
+
 	rem = global_page_state(NR_ACTIVE_ANON) +
 		global_page_state(NR_ACTIVE_FILE) +
 		global_page_state(NR_INACTIVE_ANON) +
 		global_page_state(NR_INACTIVE_FILE);
-	if (nr_to_scan <= 0 || min_score_adj == OOM_SCORE_ADJ_MAX + 1) {
+	if (!force_select && (sc->nr_to_scan <= 0 || min_score_adj == OOM_SCORE_ADJ_MAX + 1)) {
 		lowmem_print(5, "lowmem_shrink %lu, %x, return %d\n",
 			     nr_to_scan, sc->gfp_mask, rem);
 
 		if (nr_to_scan > 0)
 			mutex_unlock(&scan_mutex);
-
+		g_lmk_profile.reason_adj_max++;
 		return rem;
 	}
 	selected_oom_score_adj = min_score_adj;
@@ -328,6 +566,11 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 	for_each_process(tsk) {
 		struct task_struct *p;
 		short oom_score_adj;
+		short oom_qos;
+		unsigned long task_life_time;
+		struct timespec delta;
+		short oom_qos_endurance;
+		bool oom_qos_prefer_kill;
 
 		if (tsk->flags & PF_KTHREAD)
 			continue;
@@ -341,6 +584,10 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 				rcu_read_unlock();
 				/* give the system time to free up the memory */
 				msleep_interruptible(20);
+				/* if pressure is high enough,
+				 * select the other one even if someone is teriminting. */
+				if (force_select > 0) continue;
+				g_lmk_profile.reason_tif_memdie++;
 				mutex_unlock(&scan_mutex);
 				return 0;
 			}
@@ -351,6 +598,19 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 			continue;
 
 		oom_score_adj = p->signal->oom_score_adj;
+		oom_qos = p->signal->oom_qos;
+		get_oom_qos_endurance(oom_qos_endurance, oom_qos);
+		oom_qos_prefer_kill = is_prefer_to_kill(oom_qos);
+		/* mark the associated category is empty or not
+		 * The highest value of task_bitmap is 'task_bitmap_mask',
+		 * means all slots are not empty. */
+		for (i = array_size - 1; i >= 0 && (task_bitmap & task_bitmap_mask) < task_bitmap_mask; i--) {
+			if (oom_score_adj >= lowmem_adj[i]) {
+				task_bitmap |= 1 << (array_size - 1 - i);
+				break;
+			}
+		}
+
 		if (oom_score_adj < min_score_adj) {
 			task_unlock(p);
 			continue;
@@ -358,21 +618,94 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 		tasksize = get_mm_rss(p->mm);
 		task_unlock(p);
 		if (tasksize <= 0)
-			continue;
-		if (selected) {
-			if (oom_score_adj < selected_oom_score_adj)
-				continue;
-			if (oom_score_adj == selected_oom_score_adj &&
-			    tasksize <= selected_tasksize)
-				continue;
+		    continue;
+		//ASUS_BSP:ignore media if it's working
+		if(oom_score_adj == 117 && !strcmp(p->comm,"d.process.media")){
+		    lowmem_print(2, "adj == 117 and media, not killed !!!!\n");
+		    continue;
 		}
-		selected = p;
-		selected_tasksize = tasksize;
-		selected_oom_score_adj = oom_score_adj;
-		lowmem_print(3, "select '%s' (%d), adj %hd, size %d, to kill\n",
-			     p->comm, p->pid, oom_score_adj, tasksize);
+                if(!strcmp(p->comm,"FinalizerDaemon")){
+                    lowmem_print(3, "FinalizerDaemon, not killed !!!!\n");
+                    continue;
+                }
+                if(!strcmp(p->comm,"GC")){
+                    lowmem_print(3, "GC, not killed !!!!\n");
+                    continue;
+                }
+                /* Exame QOS level of this task */
+                if (oom_qos_endurance > 0 && oom_score_adj >= 470) {
+                        get_monotonic_boottime(&delta);
+                        delta = timespec_sub(delta, p->real_start_time);
+                        task_life_time = timespec_to_jiffies(&delta);
+                        if (task_life_time < oom_qos_endurance*HZ) {
+                                lowmem_print(3, "skip '%s' (%d), adj %hd, for QOS. lifeTime(ms) %u, \n",
+                                             p->comm, p->pid, oom_score_adj,
+                                             jiffies_to_msecs(task_life_time));
+                                /* This is a candicate for killing. */
+                                if (selected_qos) {
+                                        if (oom_score_adj < selected_qos_oom_score_adj)
+                                                continue;
+                                        if (oom_score_adj == selected_qos_oom_score_adj &&
+                                            tasksize <= selected_qos_tasksize) {
+                                                continue;
+                                        }
+                                }
+                                selected_qos = p;
+                                selected_qos_tasksize = tasksize;
+                                selected_qos_oom_score_adj = oom_score_adj;
+                                continue;
+                        }
+                }
+
+                if (selected) {
+                        if (oom_score_adj < selected_oom_score_adj)
+                                continue;
+                        //For foreground and previous app, choice app allocating lower memory
+                        if (oom_score_adj == 0 || oom_score_adj == 411) {
+                                if (oom_score_adj == selected_oom_score_adj &&
+                                    tasksize > selected_tasksize)
+                                        continue;
+                        } else {
+                                if (oom_score_adj == selected_oom_score_adj) {
+                                        /* the same adj level */
+                                        if (selected_mark_as_prefer_kill &&
+                                            !oom_qos_prefer_kill)
+                                                continue;
+                                        if (tasksize <= selected_tasksize) {
+                                                continue;
+                                        }
+                                }
+                        }
+                }
+                selected = p;
+                selected_tasksize = tasksize;
+                selected_oom_score_adj = oom_score_adj;
+                selected_mark_as_prefer_kill = oom_qos_prefer_kill;
+                lowmem_print(3, "select '%s' (%d), adj %hd, size %d, to kill\n",
+                             p->comm, p->pid, oom_score_adj, tasksize);
+        }
+        /* make a decision between selected and selected_qos */
+        if (selected && selected_qos && selected_oom_score_adj < 470) {
+               /* Previous app or more critical */
+               if (selected_qos_oom_score_adj > selected_oom_score_adj ||
+                       (selected_qos_oom_score_adj == selected_oom_score_adj &&
+                       selected_qos_tasksize > selected_tasksize)) {
+                       selected = selected_qos;
+                       selected_tasksize = selected_qos_tasksize;
+                       selected_oom_score_adj = selected_qos_oom_score_adj;
+		}
 	}
 	if (selected) {
+               if (selected_oom_score_adj <= 0)
+                {
+                    lowmem_print(1,"dump_timeout: %lu , jiffies: %lu\n",dump_meminfo_timeout,jiffies);
+                    if (!time_before_eq(jiffies, dump_meminfo_timeout) || dump_meminfo_timeout==0)
+                    {
+                        dump_meminfo_timeout = jiffies + 5*HZ;
+                        queue_work(dumpmem_workqueue, &dumpmem_work);
+                    }
+                }
+
 		lowmem_print(1, "Killing '%s' (%d), adj %hd,\n" \
 				"   to free %ldkB on behalf of '%s' (%d) because\n" \
 				"   cache %ldkB is below limit %ldkB for oom_score_adj %hd\n" \
@@ -384,7 +717,8 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 				"   Slab Reclaimable is %ldkB\n" \
 				"   Slab UnReclaimable is %ldkB\n" \
 				"   Total Slab is %ldkB\n" \
-				"   GFP mask is 0x%x\n",
+				"   GFP mask is 0x%x\n" \
+				"   Force %d\n", 
 			     selected->comm, selected->pid,
 			     selected_oom_score_adj,
 			     selected_tasksize * (long)(PAGE_SIZE / 1024),
@@ -408,7 +742,7 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 				(long)(PAGE_SIZE / 1024) +
 			     global_page_state(NR_SLAB_UNRECLAIMABLE) *
 				(long)(PAGE_SIZE / 1024),
-			     sc->gfp_mask);
+			     sc->gfp_mask,force_select);
 
 		if (lowmem_debug_level >= 2 && selected_oom_score_adj == 0) {
 			show_mem(SHOW_MEM_FILTER_NODES);
@@ -420,6 +754,7 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 		send_sig(SIGKILL, selected, 0);
 		set_tsk_thread_flag(selected, TIF_MEMDIE);
 		rem -= selected_tasksize;
+		g_lmk_profile.select++;
 		rcu_read_unlock();
 		/* give the system time to free up the memory */
 		msleep_interruptible(20);
@@ -428,9 +763,57 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 
 	lowmem_print(4, "lowmem_shrink %lu, %x, return %d\n",
 		     nr_to_scan, sc->gfp_mask, rem);
+	g_lmk_profile.reason_nop++;
+	/* The highest value of task_bitmap is 'task_bitmap_mask',
+	 * means all slots are not empty.
+	 * So, we don't need to update timestamps. */
+	if ((task_bitmap & task_bitmap_mask) >= task_bitmap_mask) {
+		mutex_unlock(&scan_mutex);
+		return rem;
+	}
+
+	/* update timestaps(future time) to record the empty slot */
+	mutex_lock(&profile_mutex);
+	empty_slot = task_bitmap | ~(task_bitmap_mask);
+	jiffies_empty_slot = jiffies + msecs_to_jiffies(100);
+	mutex_unlock(&profile_mutex);
+	lowmem_print(4, "task_bitmap = %x\n", task_bitmap);
+
 	mutex_unlock(&scan_mutex);
 	return rem;
 }
+
+static int lmk_proc_show(struct seq_file *m, void *v)
+{
+    unsigned long p;
+
+    mutex_lock(&profile_mutex);
+    /* out of date? */
+    if (time_after(jiffies, g_lmk_profile.timeout + HZ) ||
+        g_lmk_profile.timeout == INITIAL_JIFFIES) {
+        p = 0;
+    } else {
+        p = g_lmk_profile.pressure;
+        standardize_lmk_pressure(p);
+    }
+    mutex_unlock(&profile_mutex);
+    seq_printf(m, "pressure:       %8lu\n", p);
+    seq_printf(m, "reserve_KB:     %8lu\n", (global_page_state(NR_FREE_CMA_PAGES) + totalreserve_pages)*(PAGE_SIZE / 1024));
+    return 0;
+}
+
+static int lmk_proc_open(struct inode *inode, struct file *file)
+{
+       return single_open(file, lmk_proc_show, NULL);
+}
+
+static const struct file_operations lmk_proc_fops = {
+    .owner = THIS_MODULE,
+    .open = lmk_proc_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+    .release = single_release,
+};
 
 static struct shrinker lowmem_shrinker = {
 	.shrink = lowmem_shrink,
@@ -440,11 +823,15 @@ static struct shrinker lowmem_shrinker = {
 static int __init lowmem_init(void)
 {
 	register_shrinker(&lowmem_shrinker);
+	dumpmem_workqueue = create_workqueue("dumpmem_wq");
+
+	 proc_create("lmkinfo", 0444, NULL, &lmk_proc_fops);
 	return 0;
 }
 
 static void __exit lowmem_exit(void)
 {
+	destroy_workqueue(dumpmem_workqueue);
 	unregister_shrinker(&lowmem_shrinker);
 }
 

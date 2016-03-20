@@ -51,3 +51,7 @@ obj-$(CONFIG_ARCH_MSM8974)	+= clock-krait-8974.o
 
 obj-y				+= gdsc.o
 obj-y				+= mdss/
+
+ifeq ($(ASUS_PROJECT), Z380KL)
+	KBUILD_CFLAGS += -DASUS_PROJECT_Z380KL_DISPLAY
+endif

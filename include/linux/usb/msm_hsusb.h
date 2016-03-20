@@ -2,7 +2,7 @@
  *
  * Copyright (C) 2008 Google, Inc.
  * Author: Brian Swetland <swetland@google.com>
- * Copyright (c) 2009-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2009-2015, The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -216,6 +216,28 @@ enum usb_ctrl {
 };
 
 /**
+ *  USB Cover Status
+ */
+enum cover_status{
+	COVER_EMPTY = 0,	/*DEFAULT COVER STATUS NOT ATTACHED */
+	COVER_IN,	/* COVER ATTACHED */
+	COVER_ENUMERATION,	/*COVER ENUMERATION FINISH*/
+	COVER_OUT,	/* COVER DEATTACHED*/
+	COVER_POWERLESS, /* POWERLESS COVER OR NO POWER COVER/BACK */
+};
+
+/*
+ * MultiBack Type
+ */
+
+enum back_types{
+   BACK_UNKNOWN = 0,
+   AUDIO_COVER,
+   POWER_BANK,
+   POWERLESS_COVER,
+};
+
+/**
  * struct msm_otg_platform_data - platform device data
  *              for msm_otg driver.
  * @phy_init_seq: PHY configuration sequence. val, reg pairs
@@ -299,6 +321,9 @@ struct msm_otg_platform_data {
 	bool disable_retention_with_vdd_min;
 	int usb_id_gpio;
 	bool phy_dvdd_always_on;
+    int usb_dpn_sel_gpio;
+    int usb_cover_id_gpio;
+    int usb_cover_id_np_gpio;
 };
 
 /* phy related flags */
@@ -379,6 +404,7 @@ struct msm_otg_platform_data {
  * @in_lpm: indicates low power mode (LPM) state.
  * @async_int: IRQ line on which ASYNC interrupt arrived in LPM.
  * @cur_power: The amount of mA available from downstream port.
+ * @otg_wq: Strict order otg workqueue for OTG works (SM/ID/SUSPEND).
  * @chg_work: Charger detection work.
  * @chg_state: The state of charger detection process.
  * @chg_type: The type of charger attached.
@@ -452,8 +478,10 @@ struct msm_otg {
 	atomic_t set_fpr_with_lpm_exit;
 	int async_int;
 	unsigned cur_power;
+	struct workqueue_struct *otg_wq;
 	struct delayed_work chg_work;
 	struct delayed_work id_status_work;
+    struct delayed_work cover_det_status_work;
 	struct delayed_work suspend_work;
 	enum usb_chg_state chg_state;
 	enum usb_chg_type chg_type;
@@ -541,6 +569,14 @@ struct msm_otg {
 	bool pm_done;
 	struct qpnp_vadc_chip	*vadc_dev;
 	int ext_id_irq;
+	wait_queue_head_t host_suspend_wait;
+    int ext_id_irq_cover;
+    int ext_id_irq_cover_np;
+#define USB_SESSION_PAD 0
+#define USB_SESSION_COVER 1
+    int usb_current_session;
+    int usb_next_session;
+    bool ahost_force_disconnect;
 };
 
 struct ci13xxx_platform_data {

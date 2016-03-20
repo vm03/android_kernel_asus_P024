@@ -544,7 +544,7 @@ static void smaps_pte_entry(pte_t ptent, unsigned long addr,
 	}
 }
 
-static int smaps_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
+int smaps_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 			   struct mm_walk *walk)
 {
 	struct mem_size_stats *mss = walk->private;

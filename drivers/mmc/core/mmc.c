@@ -1487,7 +1487,10 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 					mmc_hostname(host), __func__, err);
 			goto free_card;
 		}
-
+        /* give host chance to change default configuration*/
+        if (host && host->ops && host->ops->change_configuration) {
+                (host->ops->change_configuration)(host, card);
+        }
 		/* If doing byte addressing, check if required to do sector
 		 * addressing.  Handle the case of <2GB cards needing sector
 		 * addressing.  See section 8.1 JEDEC Standard JED84-A441;

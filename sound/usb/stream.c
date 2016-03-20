@@ -623,6 +623,23 @@ int snd_usb_parse_audio_interface(struct snd_usb_audio *chip, int iface_no)
 							fp->maxpacksize * 2)
 			continue;
 
+        // eden
+        #if 1
+		///////// for CM6206LX //////////
+		//if(chip->usb_id == USB_ID(0x294b, 0x1006))
+				//if (fmt->bNrChannels == 8)
+		if (chip->usb_id == USB_ID(0x0d8c, 0x0102)) {
+			if (stream == SNDRV_PCM_STREAM_PLAYBACK) {
+			    snd_printk(KERN_ERR "############# stream.c: fmt->bNrChannels = %d\n", fmt->bNrChannels);
+				if ((fmt->bNrChannels != 2) && (fmt->bNrChannels != 4) && (fmt->bNrChannels != 6))
+					continue;
+			} else {
+				continue;       // skip recording function
+			}
+		}
+		//////////////////////////////////
+        #endif
+
 		fp = kzalloc(sizeof(*fp), GFP_KERNEL);
 		if (! fp) {
 			snd_printk(KERN_ERR "cannot malloc\n");
@@ -677,6 +694,16 @@ int snd_usb_parse_audio_interface(struct snd_usb_audio *chip, int iface_no)
 
 		/* ok, let's parse further... */
 		if (snd_usb_parse_audio_format(chip, fp, format, fmt, stream, alts) < 0) {
+			kfree(fp->rate_table);
+			kfree(fp->chmap);
+			kfree(fp);
+			fp = NULL;
+			continue;
+		}
+
+		if ((chip->usb_id == USB_ID(0x0d8c, 0x0102)) && (fp->rate_max > 48000)) {
+			pr_info("%s: audio cover only support 48kHz, %dHz exceeds limit, abandon it\n",
+			__func__, fp->rate_max);
 			kfree(fp->rate_table);
 			kfree(fp->chmap);
 			kfree(fp);

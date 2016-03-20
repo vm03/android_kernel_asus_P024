@@ -2380,3 +2380,7 @@ source "crypto/Kconfig"
 source "lib/Kconfig"
 
 source "arch/arm/kvm/Kconfig"
+
+config Z380KL
+       bool "ASUS Z380KL Product"
+       depends on ARM

@@ -17,6 +17,7 @@
 #include "camera.h"
 #include "msm_cci.h"
 #include "msm_camera_dt_util.h"
+#include <linux/debugfs.h> 
 
 /* Logging macro */
 #undef CDBG
@@ -25,6 +26,16 @@
 #define SENSOR_MAX_MOUNTANGLE (360)
 
 static struct v4l2_file_operations msm_sensor_v4l2_subdev_fops;
+
+//ASUS_BSP++ for ATD status
+static unsigned int ATD_camera_status;
+static unsigned int ATD_vga_status;
+static unsigned int ATD_camera_id;
+static unsigned int ATD_vga_id;
+//ASUS_BSP-- for ATD status
+
+//ASUS_BSP+++ for reading dtsi fail
+static uint32_t gCell_id;
 
 /* Static declaration */
 static struct msm_sensor_ctrl_t *g_sctrl[MAX_CAMERAS];
@@ -624,11 +635,32 @@ static void msm_sensor_fill_sensor_info(struct msm_sensor_ctrl_t *s_ctrl,
 	strlcpy(entity_name, s_ctrl->msm_sd.sd.entity.name, MAX_SENSOR_NAME);
 }
 
+//ASUS_BSP++ for ATD status
+/*---------- dbgfs ----------*/
+int msm_sensor_driver_dbgfs_init(int cameraId)
+{
+        struct dentry *debugfs_dir;
+
+	if(cameraId == 0) {
+		debugfs_dir = debugfs_create_dir("camera0", NULL);
+		debugfs_create_u32("camera_status", 0644, debugfs_dir, &ATD_camera_status);
+		debugfs_create_u32("sensor_id", 0644, debugfs_dir, &ATD_camera_id);
+	} else {
+		debugfs_dir = debugfs_create_dir("camera1", NULL);
+		debugfs_create_u32("vga_status", 0644, debugfs_dir, &ATD_vga_status);
+		debugfs_create_u32("sensor_id", 0644, debugfs_dir, &ATD_vga_id);
+	} 
+	return 0;
+}
+/*---------- dbgfs ----------*/
+//ASUS_BSP++ for ATD status
+
 /* static function definition */
 int32_t msm_sensor_driver_probe(void *setting,
 	struct msm_sensor_info_t *probed_info, char *entity_name)
 {
 	int32_t                              rc = 0;
+        int32_t                              main_camera_gpio_config;  //ASUS_BSP+++
 	struct msm_sensor_ctrl_t            *s_ctrl = NULL;
 	struct msm_camera_cci_client        *cci_client = NULL;
 	struct msm_camera_sensor_slave_info *slave_info = NULL;
@@ -705,6 +737,26 @@ int32_t msm_sensor_driver_probe(void *setting,
 			goto free_slave_info;
 		}
 	}
+
+	//ASUS_BSP+++ MAIN camera probed by gpio 56
+	if(strcmp("ov5670",slave_info->sensor_name) == 0) {
+		rc = gpio_request(958, "MAIN_CAM_ID1");
+		if(rc) {
+			pr_err("%s: failed to request gpio(pin 56:958) %d\n", __func__, __LINE__);
+		} else {
+			rc = gpio_direction_input(958);
+			main_camera_gpio_config = gpio_get_value(958);
+			pr_info("%s: Main camera gpio value = %d %d\n", __func__, main_camera_gpio_config, __LINE__);
+		}
+		gpio_free(958);
+
+		if(main_camera_gpio_config == 0) {
+			pr_err("%s: Bypass camera probe %s %d\n", __func__, slave_info->sensor_name, __LINE__);
+			rc = -EFAULT;
+			goto free_slave_info;
+		}
+	}
+	//ASUS_BSP--- MAIN camera probed by gpio 56
 
 	/* Print slave info */
 	CDBG("camera id %d", slave_info->camera_id);
@@ -871,8 +923,29 @@ int32_t msm_sensor_driver_probe(void *setting,
 		pr_err("%s power up failed", slave_info->sensor_name);
 		goto free_camera_info;
 	}
-
+//ASUS_BSP+++
+       /* read otp */
+       rc = s_ctrl->func_tbl->sensor_read_otp(s_ctrl);
+       if(rc < 0)
+	       pr_err("%s read otp fail", slave_info->sensor_name);
+//ASUS_BSP---
 	pr_err("%s probe succeeded", slave_info->sensor_name);
+
+	//ASUS_BSP++ for ATD status
+	if(strcmp("ov5670",slave_info->sensor_name) == 0) {
+		ATD_camera_status = 1;
+		ATD_camera_id = 5670; //camera_info->sensor_id;
+		msm_sensor_driver_dbgfs_init(0);
+        } else if(strcmp("t4k35",slave_info->sensor_name) == 0) {
+                ATD_camera_status = 1;
+                ATD_camera_id = 35; //camera_info->sensor_id;
+                msm_sensor_driver_dbgfs_init(0);
+	} else if (strcmp("gc0310",slave_info->sensor_name) == 0 || strcmp("hm2051",slave_info->sensor_name) == 0) {
+		ATD_vga_status = 1;
+		ATD_vga_id = 2051;//camera_info->sensor_id;
+		msm_sensor_driver_dbgfs_init(1);
+	}
+	//ASUS_BSP-- for ATD status
 
 	/*
 	  Set probe succeeded flag to 1 so that no other camera shall
@@ -966,6 +1039,19 @@ static int32_t msm_sensor_driver_get_gpio_data(
 
 	gpio_array_size = of_gpio_count(of_node);
 	CDBG("gpio count %d", gpio_array_size);
+
+//ASUS_BSP+++
+#if defined CONFIG_Z380KL
+	if(gpio_array_size > 1023) {
+		printk("gpio_array size count = %d, Restore it!!", gpio_array_size);
+		if(gCell_id == 0)
+			gpio_array_size = 3;
+		else if (gCell_id == 1)
+			gpio_array_size = 4;
+	}
+#endif
+//ASUS_BSP---
+
 	if (!gpio_array_size)
 		return 0;
 
@@ -977,6 +1063,24 @@ static int32_t msm_sensor_driver_get_gpio_data(
 	for (i = 0; i < gpio_array_size; i++) {
 		gpio_array[i] = of_get_gpio(of_node, i);
 		CDBG("gpio_array[%d] = %d", i, gpio_array[i]);
+
+//ASUS_BSP+++
+#if defined CONFIG_Z380KL
+		if (gpio_array[i] > 1023) {
+			if(gCell_id == 0) {
+				if( i == 0) gpio_array[i] = 928;
+				else if( i == 1) gpio_array[i] = 936;
+				else if( i == 2) gpio_array[i] = 1023;
+			} else if (gCell_id == 1) {
+				if( i == 0) gpio_array[i] = 929;
+                                else if( i == 1) gpio_array[i] = 930;
+                                else if( i == 2) gpio_array[i] = 935;
+                                else if( i == 3) gpio_array[i] = 1023;
+			}
+			pr_err("Resore gpio_array[%d] = %d", i, gpio_array[i]);
+		}
+#endif
+//ASUS_BSP---
 	}
 
 	rc = msm_camera_get_dt_gpio_req_tbl(of_node, gconf, gpio_array,
@@ -1029,6 +1133,8 @@ static int32_t msm_sensor_driver_get_dt_data(struct msm_sensor_ctrl_t *s_ctrl)
 		goto FREE_SENSOR_DATA;
 	}
 	s_ctrl->id = cell_id;
+
+	gCell_id = cell_id; //ASUS_BSP+++
 
 	/* Validate cell_id */
 	if (cell_id >= MAX_CAMERAS) {

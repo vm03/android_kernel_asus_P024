@@ -375,6 +375,9 @@ static int hw_device_reset(struct ci13xxx *udc)
 		return -ENODEV;
 	}
 
+	if (udc->force_usb1)
+		hw_cwrite(CAP_PORTSC, PORTSC_PFSC, PORTSC_PFSC);
+
 	return 0;
 }
 
@@ -1705,6 +1708,40 @@ static ssize_t usb_remote_wakeup(struct device *dev,
 }
 static DEVICE_ATTR(wakeup, S_IWUSR, 0, usb_remote_wakeup);
 
+static ssize_t show_force_port_speed(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct ci13xxx *udc = container_of(dev, struct ci13xxx, gadget.dev);
+
+	scnprintf(buf, PAGE_SIZE, "force port speed = %u\n", udc->force_usb1);
+
+	return 0;
+}
+
+static ssize_t store_force_port_speed(struct device *dev,
+			       struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct ci13xxx *udc = container_of(dev, struct ci13xxx, gadget.dev);
+
+	if (attr == NULL || buf == NULL) {
+		dev_err(dev, "[%s] EINVAL\n", __func__);
+		goto done;
+	}
+
+
+	if (!strncmp(buf, "high", 4))
+		udc->force_usb1 = 0;
+	else if (!strncmp(buf, "full", 3) || !strncmp(buf, "low", 3))
+		udc->force_usb1 = 1;
+	else
+		udc->force_usb1 = 0;
+
+done:
+	return count;
+}
+static DEVICE_ATTR(force_port_speed, S_IRUSR | S_IWUSR, show_force_port_speed, store_force_port_speed);
+
 /**
  * dbg_create_files: initializes the attribute interface
  * @dev: device
@@ -1741,6 +1778,9 @@ __maybe_unused static int dbg_create_files(struct device *dev)
 	retval = device_create_file(dev, &dev_attr_requests);
 	if (retval)
 		goto rm_registers;
+	retval = device_create_file(dev, &dev_attr_force_port_speed);
+	if (retval)
+		goto rm_requests;
 	retval = device_create_file(dev, &dev_attr_wakeup);
 	if (retval)
 		goto rm_remote_wakeup;
@@ -1759,6 +1799,8 @@ rm_prime:
 	device_remove_file(dev, &dev_attr_prime);
 rm_remote_wakeup:
 	device_remove_file(dev, &dev_attr_wakeup);
+rm_requests:
+	device_remove_file(dev, &dev_attr_requests);
  rm_registers:
 	device_remove_file(dev, &dev_attr_registers);
  rm_qheads:

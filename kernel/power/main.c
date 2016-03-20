@@ -22,6 +22,121 @@ DEFINE_MUTEX(pm_mutex);
 
 #ifdef CONFIG_PM_SLEEP
 
+#include <linux/list.h>
+#include <linux/async.h>
+#include <linux/rwsem.h>
+#include <linux/wakelock.h>
+static int screen_state = -1;
+static int new_screen_state = -1;
+static DECLARE_RWSEM(screen_sem);
+static DECLARE_RWSEM(list_sem);
+static LIST_HEAD(list_head);
+static struct wake_lock screen_state_wake_lock;
+static bool wakelock_init_finished = false;
+struct callback_data *register_screen_state_notifier(void (*cb)(const int state)){
+	struct callback_data *cb_d;
+	if(!cb){
+		printk("[screen_notifier]callback is null\n");
+		dump_stack();
+		return NULL;
+	}
+	if ((cb_d = kmalloc(sizeof(*cb_d), GFP_KERNEL)) == NULL){
+		printk("[screen_notifier]kmalloc failed!\n");
+		dump_stack();
+		return NULL;
+	}
+
+	cb_d->callback_fn=cb;
+	down_write(&list_sem);
+	list_add(&cb_d->node, &list_head);
+	up_write(&list_sem);
+	return cb_d;
+}
+EXPORT_SYMBOL_GPL(register_screen_state_notifier);
+
+void unregister_screen_state_notifier(struct callback_data *cb_d){
+//	BUG_ON(!cb_d);
+	if(!cb_d)
+		return;
+	down_write(&list_sem);
+	list_del(&cb_d->node);
+	up_write(&list_sem);
+	kfree(cb_d);
+}
+EXPORT_SYMBOL_GPL(unregister_screen_state_notifier);
+
+static void screen_stat_callback(void *data, async_cookie_t cookie){
+	struct callback_data *cb_d = (struct callback_data *)data;
+	cb_d->callback_fn(cb_d->screen_state);
+	if(cb_d->screen_state==NOTIFY_WHEN_SCREEN_ON)
+		printk("[screen_notifier]%pf(NOTIFY_WHEN_SCREEN_ON) done!\n",cb_d->callback_fn);
+	else if (cb_d->screen_state==NOTIFY_WHEN_SCREEN_OFF)
+		printk("[screen_notifier]%pf(NOTIFY_WHEN_SCREEN_OFF) done!\n",cb_d->callback_fn);
+}
+
+void screen_state_async_fn(struct work_struct *work){
+	struct callback_data *cb_d;
+	down_write(&screen_sem);
+	if(screen_state == new_screen_state){
+		printk("[screen_notifier]Screen state unchanged. Do Nothing.\n");
+		up_write(&screen_sem);
+		return;
+	}
+	screen_state = new_screen_state;
+
+	down_read(&list_sem);
+	list_for_each_entry(cb_d, &list_head, node){
+		cb_d->screen_state = screen_state;
+		async_schedule(screen_stat_callback, cb_d);
+	}
+	up_read(&list_sem);
+	up_write(&screen_sem);
+
+	async_synchronize_full();
+	wake_unlock(&screen_state_wake_lock);
+}
+static DECLARE_DELAYED_WORK(screen_state_async_work, screen_state_async_fn);
+
+static ssize_t screen_state_show(struct kobject *kobj,
+                                struct kobj_attribute *attr,
+                                char *buf)
+{
+	int val;
+	down_read(&screen_sem);
+	if(!wakelock_init_finished){
+		wake_lock_init(&screen_state_wake_lock, WAKE_LOCK_SUSPEND, "screen_change_notify");
+		wakelock_init_finished=true;
+	}
+	wake_lock(&screen_state_wake_lock);
+	new_screen_state = NOTIFY_WHEN_SCREEN_ON;
+	val = schedule_delayed_work(&screen_state_async_work, HZ/20);
+	up_read(&screen_sem);
+
+	printk("[screen_notifier]Screen on notity\n");
+	return sprintf(buf, "%d\n", val);
+}
+
+static ssize_t screen_state_store(struct kobject *kobj,
+                                struct kobj_attribute *attr,
+                                const char *buf, size_t n)
+{
+	int val;
+	down_read(&screen_sem);
+        if(!wakelock_init_finished){
+                wake_lock_init(&screen_state_wake_lock, WAKE_LOCK_SUSPEND, "screen_change_notify");
+                wakelock_init_finished=true;
+        }
+	wake_lock(&screen_state_wake_lock);
+	new_screen_state = NOTIFY_WHEN_SCREEN_OFF;
+	val = schedule_delayed_work(&screen_state_async_work, HZ/20);
+	up_read(&screen_sem);
+
+	printk("[screen_notifier]Screen off notify\n");
+	return n;
+}
+power_attr(screen_state);
+
+
 /* Routines for PM-transition notifications */
 
 static BLOCKING_NOTIFIER_HEAD(pm_chain_head);
@@ -584,6 +699,7 @@ static struct attribute * g[] = {
 	&pm_trace_dev_match_attr.attr,
 #endif
 #ifdef CONFIG_PM_SLEEP
+	&screen_state_attr.attr,
 	&pm_async_attr.attr,
 	&wakeup_count_attr.attr,
 #ifdef CONFIG_PM_AUTOSLEEP

@@ -18,8 +18,94 @@
 #include <linux/regulator/rpm-smd-regulator.h>
 #include <linux/regulator/consumer.h>
 
+// ASUS BSP +++
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+// ASUS BSP ---
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
+
+static uint8_t otp_data[32];
+uint16_t total_24 = 0, total_32 = 0, check_sum_24 = 0, check_sum_32 = 0;
+
+// For DIT VCM debug Interface +++
+#define CAMERA_PROC_OTP_FILE "otp"
+#define CAMERA_PROC_OTP_UNIQUE_ID_FILE "otp_uid"
+
+static struct proc_dir_entry *camera_proc_otp_file;
+static struct proc_dir_entry *camera_proc_otp_uid_file;
+
+static int camera_proc_otp_read(struct seq_file *buf, void *v){
+	int i;
+	if (total_32 != check_sum_32) {
+		for (i = 0;i < 24;i++){
+		    seq_printf(buf, "0x%X", otp_data[i]);
+		        if((i+1) % 8 != 0)
+				seq_printf(buf, " ");
+			  else
+				seq_printf(buf, "\n");
+		}
+	}
+	else{
+		for (i = 0;i < 32;i++){
+		    seq_printf(buf, "0x%X", otp_data[i]);
+			  if((i+1) % 8 != 0)
+				seq_printf(buf, " ");
+			  else
+				seq_printf(buf, "\n");
+		}
+	}
+
+	return 0;
+}
+
+static int camera_proc_otp_open(struct inode *inode, struct  file *file) {
+    return single_open(file, camera_proc_otp_read, NULL);
+}
+
+static const struct file_operations camera_otp_fops = {
+        .owner = THIS_MODULE,
+        .open = camera_proc_otp_open,
+        .read = seq_read,
+};
+
+static int camera_proc_otp_uid_read(struct seq_file *buf, void *v){
+	int i;
+
+	for (i = 10;i < 22;i++)
+		seq_printf(buf, "%X", otp_data[i]);
+	seq_printf(buf, "\n");
+	return 0;
+}
+
+static int camera_proc_otp_uid_open(struct inode *inode, struct  file *file) {
+    return single_open(file, camera_proc_otp_uid_read, NULL);
+}
+
+static const struct file_operations camera_otp_uid_fops = {
+        .owner = THIS_MODULE,
+        .open = camera_proc_otp_uid_open,
+        .read = seq_read,
+};
+
+void create_camera_proc_file(void){
+
+	camera_proc_otp_file = proc_create(CAMERA_PROC_OTP_FILE, 0666, NULL, &camera_otp_fops);
+	if(camera_proc_otp_file){
+		printk("proc otp file create sucessed!\n");
+	}
+	else{
+		printk("proc otp file create failed!\n");
+	}
+	camera_proc_otp_uid_file = proc_create(CAMERA_PROC_OTP_UNIQUE_ID_FILE, 0666, NULL, &camera_otp_uid_fops);
+	if(camera_proc_otp_uid_file){
+		printk("proc otp_uid file create sucessed!\n");
+	}
+	else{
+		printk("proc otp_uid file create failed!\n");
+	}
+}
+//For DIT VCM Debug and ATD flash Interface---
 
 static struct v4l2_file_operations msm_sensor_v4l2_subdev_fops;
 static void msm_sensor_adjust_mclk(struct msm_camera_power_ctrl_t *ctrl)
@@ -410,6 +496,11 @@ static struct msm_cam_clk_info cam_8974_clk_info[] = {
 	[SENSOR_CAM_CLK] = {"cam_clk", 0},
 };
 
+//ASUS_BSP+++ VCM noise reduction
+extern  void asus_actuator_close(void);
+int isPowerup=0;
+//ASUS_BSP+++ VCM noise reduction
+
 int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 {
 	struct msm_camera_power_ctrl_t *power_info;
@@ -422,6 +513,12 @@ int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 		return -EINVAL;
 	}
 
+        //ASUS_BSP+++ VCM noise reduction
+	if(isPowerup){
+		asus_actuator_close();
+	}
+	//ASUS_BSP+++ VCM noise reduction
+
 	power_info = &s_ctrl->sensordata->power_info;
 	sensor_device_type = s_ctrl->sensor_device_type;
 	sensor_i2c_client = s_ctrl->sensor_i2c_client;
@@ -431,6 +528,9 @@ int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 			__func__, __LINE__, power_info, sensor_i2c_client);
 		return -EINVAL;
 	}
+
+        isPowerup=0; //ASUS_BSP+++ VCM noise reduction
+
 	return msm_camera_power_down(power_info, sensor_device_type,
 		sensor_i2c_client);
 }
@@ -482,6 +582,12 @@ int msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl)
 		}
 	}
 
+        //ASUS_BSP+++ VCM noise reduction
+	if(rc==0){
+		isPowerup=1;
+	}
+	//ASUS_BSP+++ VCM noise reduction
+
 	return rc;
 }
 
@@ -525,6 +631,290 @@ int msm_sensor_match_id(struct msm_sensor_ctrl_t *s_ctrl)
 	}
 	return rc;
 }
+
+//ASUS_BSP+++
+int msm_sensor_read_otp(struct msm_sensor_ctrl_t *s_ctrl){
+
+	struct msm_sensor_otp_data *buf;
+	const char *sensor_name;
+	int package, i, ret ;
+
+	uint16_t read_value[32];
+	uint16_t local_data;
+
+	sensor_name = s_ctrl->sensordata->sensor_name;
+	s_ctrl->sensor_i2c_client->addr_type = MSM_CAMERA_I2C_WORD_ADDR;
+
+	if(strcmp("ov5670",sensor_name) == 0){
+		int start_addr, end_addr;
+		pr_err("Back Camera %s\n", sensor_name);
+		// otp valid after mipi on and sw stream on
+		s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+		    s_ctrl->sensor_i2c_client, 0x0100, 0x01, MSM_CAMERA_I2C_BYTE_DATA);
+		// disable OTP_DPC
+		s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read(
+			s_ctrl->sensor_i2c_client, 0x5002, &local_data, MSM_CAMERA_I2C_BYTE_DATA);
+		s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+			s_ctrl->sensor_i2c_client, 0x5002, ((0x00&0x02) | (local_data&(~0x02))),
+			MSM_CAMERA_I2C_BYTE_DATA);
+
+		for (package = 2; package >=0; package--){
+			if(package == 0){
+			    start_addr = 0x7010;
+			    end_addr   = 0x702f;
+			}
+			else if(package == 1){
+			    start_addr = 0x7030;
+			    end_addr   = 0x704f;
+			}
+			else if(package == 2){
+			    start_addr = 0x7050;
+			    end_addr   = 0x706f;
+			}
+			pr_err("package = %d, start_addr = 0x%x, end_addr = 0x%x\n",
+				package, start_addr, end_addr);
+			s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				s_ctrl->sensor_i2c_client, 0x3d84, 0xc0, MSM_CAMERA_I2C_BYTE_DATA);
+
+			//partial mode OTP write start address
+			s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				s_ctrl->sensor_i2c_client, 0x3d88, (start_addr >> 8)&0xff, MSM_CAMERA_I2C_BYTE_DATA);
+			s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				s_ctrl->sensor_i2c_client, 0x3d89, start_addr & 0xff, MSM_CAMERA_I2C_BYTE_DATA);
+
+			// partial mode OTP write end address
+			s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				s_ctrl->sensor_i2c_client, 0x3d8A, (end_addr >> 8)&0xff, MSM_CAMERA_I2C_BYTE_DATA);
+			s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				s_ctrl->sensor_i2c_client, 0x3d8B, end_addr & 0xff, MSM_CAMERA_I2C_BYTE_DATA);
+
+			// read otp into buffer
+			s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				s_ctrl->sensor_i2c_client, 0x3d81, 0x01, MSM_CAMERA_I2C_BYTE_DATA);
+
+			msleep(5);
+
+			s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read(
+				s_ctrl->sensor_i2c_client, 0x3d81, &local_data, MSM_CAMERA_I2C_BYTE_DATA);
+
+			for (i = 0; i < 32; i++){
+				s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read( s_ctrl->sensor_i2c_client,
+					start_addr + i, &read_value[i], MSM_CAMERA_I2C_BYTE_DATA);
+				// pr_err("start_addr 0x%x, value: 0x%x",start_addr + i, read_value[i]);
+			}
+			for(i = 0; i < 30; i++){
+				total_32+=read_value[i];
+			}
+
+			check_sum_32 = (read_value[30] << 8) + read_value [31];
+
+			pr_err("\n%s Check Data Package %d, 0x%X 0x%X\n", __func__, package, read_value[0], read_value[1]);
+			if((read_value[0]!=0 || read_value[1]!=0) && (read_value[0]!=0xff || read_value[1]!=0xff)){
+				// 32 bytes OTP
+				if(total_32 == check_sum_32){
+				    pr_err("32byte OTP");
+				    // clear otp buffer
+				    for (i = start_addr; i<=end_addr; i++)
+				        s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+						    s_ctrl->sensor_i2c_client, i, 0x00, MSM_CAMERA_I2C_BYTE_DATA);
+
+				    // enable OTP_DPC
+				    s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read(
+				        s_ctrl->sensor_i2c_client, 0x5002, &local_data,MSM_CAMERA_I2C_BYTE_DATA);
+				    s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				        s_ctrl->sensor_i2c_client, 0x5002, ((0x02&0x02) | (local_data&(~0x02))),
+				        MSM_CAMERA_I2C_BYTE_DATA);
+				    s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				        s_ctrl->sensor_i2c_client, 0x0100, 0x00, MSM_CAMERA_I2C_BYTE_DATA);
+				    goto out;
+				}
+				else{
+				    pr_err("24byte OTP");
+				    // clear otp buffer
+				    for (i = start_addr; i<=end_addr; i++){
+				        s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				            s_ctrl->sensor_i2c_client, i, 0x00, MSM_CAMERA_I2C_BYTE_DATA);
+
+				        for (package = 2; package >=0; package--){
+				            if(package == 0){
+				                start_addr = 0x7010;
+				                end_addr   = 0x7027;
+				            }
+				            else if(package == 1){
+				                start_addr = 0x7028;
+				                end_addr   = 0x703f;
+				            }
+				            else if(package == 2){
+				                start_addr = 0x7040;
+				                end_addr   = 0x7057;
+				            }
+				            pr_err("package = %d, start_addr = 0x%x, end_addr = 0x%x\n",
+					            package, start_addr, end_addr);
+
+				            s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				                s_ctrl->sensor_i2c_client, 0x3d84, 0xc0, MSM_CAMERA_I2C_BYTE_DATA);
+
+				            //partial mode OTP write start address
+				            s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				                s_ctrl->sensor_i2c_client, 0x3d88, (start_addr >> 8)&0xff, MSM_CAMERA_I2C_BYTE_DATA);
+				            s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				                s_ctrl->sensor_i2c_client, 0x3d89, start_addr & 0xff, MSM_CAMERA_I2C_BYTE_DATA);
+
+				            // partial mode OTP write end address
+				            s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				                s_ctrl->sensor_i2c_client, 0x3d8A, (end_addr >> 8)&0xff, MSM_CAMERA_I2C_BYTE_DATA);
+				            s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				                s_ctrl->sensor_i2c_client, 0x3d8B, end_addr & 0xff, MSM_CAMERA_I2C_BYTE_DATA);
+
+				            // read otp into buffer
+				            s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				                s_ctrl->sensor_i2c_client, 0x3d81, 0x01, MSM_CAMERA_I2C_BYTE_DATA);
+
+				            msleep(5);
+
+				            s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read(
+				                s_ctrl->sensor_i2c_client, 0x3d81, &local_data, MSM_CAMERA_I2C_BYTE_DATA);
+
+				            for (i = 0; i < 24; i++){
+				                s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read( s_ctrl->sensor_i2c_client,
+				                    start_addr + i, &read_value[i], MSM_CAMERA_I2C_BYTE_DATA);
+				                // pr_err("start_addr 0x%x, value: 0x%x",start_addr + i, read_value[i]);
+				            }
+				            pr_err("\n%s Check Data Package %d, 0x%X 0x%X\n", __func__, package, read_value[0], read_value[1]);
+				            if((read_value[8]!=0 || read_value[9]!=0) && (read_value[8]!=0xff || read_value[9]!=0xff)){
+				                // clear otp buffer
+				                for (i = start_addr; i<=end_addr; i++)
+				                    s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				                        s_ctrl->sensor_i2c_client, i, 0x00, MSM_CAMERA_I2C_BYTE_DATA);
+
+				                // enable OTP_DPC
+				                s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read(
+				                    s_ctrl->sensor_i2c_client, 0x5002, &local_data,MSM_CAMERA_I2C_BYTE_DATA);
+				                s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				                    s_ctrl->sensor_i2c_client, 0x5002, ((0x02&0x02) | (local_data&(~0x02))),
+				                    MSM_CAMERA_I2C_BYTE_DATA);
+				                s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				                    s_ctrl->sensor_i2c_client, 0x0100, 0x00, MSM_CAMERA_I2C_BYTE_DATA);
+				                goto out;
+	                        }
+	                    }
+	                }
+	            }
+	        }
+	    }
+	    // clear otp buffer
+	    for (i = start_addr; i<=end_addr; i++)
+	        s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+	            s_ctrl->sensor_i2c_client, i, 0x00, MSM_CAMERA_I2C_BYTE_DATA);
+	    // enable OTP_DPC
+	    s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read(
+	        s_ctrl->sensor_i2c_client, 0x5002, &local_data,
+	        MSM_CAMERA_I2C_BYTE_DATA);
+	    s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+	        s_ctrl->sensor_i2c_client, 0x5002, ((0x02&0x02) | (local_data&(~0x02))),
+	        MSM_CAMERA_I2C_BYTE_DATA);
+	    s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+	        s_ctrl->sensor_i2c_client, 0x0100, 0x00, MSM_CAMERA_I2C_BYTE_DATA);
+	    return -EIO;
+	}
+	if(strcmp("t4k35",sensor_name) == 0){
+	    uint16_t data;
+
+	    pr_err("Back Camera %s\n",sensor_name);
+	    ret = s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+	    s_ctrl->sensor_i2c_client, 0x3500, 0x01, MSM_CAMERA_I2C_BYTE_DATA);
+	    if (ret) {
+	        pr_err("failed to write OTP_ENBL\n");
+	        return ret;
+	    }
+
+	for (package = 2; package >=0; package--){
+		//set page NO.
+		s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+			s_ctrl->sensor_i2c_client, 0x3502, package, MSM_CAMERA_I2C_BYTE_DATA);
+
+		//Start OTP access
+		ret = s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+			s_ctrl->sensor_i2c_client, 0x3500, 0x81, MSM_CAMERA_I2C_BYTE_DATA);
+		if (ret) {
+			pr_err("failed to set OTP_STA\n");
+			return ret;
+		}
+
+		//Check access status
+		for(i=0; i<10; i++) {
+			s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read(
+				s_ctrl->sensor_i2c_client, 0x3500, &data,
+				MSM_CAMERA_I2C_BYTE_DATA);
+			if((data & 0x80) >> 7 == 0) {
+				printk("%s OTP Data Ready\n", __func__);
+				break;
+			}
+			msleep(10);
+		}
+		//Reading the OTP data array
+		for (i = 0; i < 32; i++){
+			s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read(
+				s_ctrl->sensor_i2c_client, 0x3504 + i, &read_value[i],
+				MSM_CAMERA_I2C_BYTE_DATA);
+			//pr_err("start_addr 0x%x, value: 0x%x", 0x3504 + i, read_value[i]);
+		}
+		printk("%s Check Data Package %d, 0x%X 0x%X\n", __func__, package, read_value[0], read_value[1]);
+
+		if((read_value[0]!=0 || read_value[1]!=0) && (read_value[0]!=0xff || read_value[1]!=0xff)){
+			//Disable OTP access
+			ret = s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+				s_ctrl->sensor_i2c_client, 0x3500, 0x00, MSM_CAMERA_I2C_BYTE_DATA);
+		if (ret) {
+			pr_err("failed to disable OTP_STA\n");
+			return ret;
+		}
+		for(i = 0; i < 30; i++){
+			if(i < 22){
+				total_24+=read_value[i];
+			}
+			total_32+=read_value[i];
+		}
+
+		check_sum_32 = (read_value[30] << 8) + read_value [31];
+		check_sum_24 = (read_value[22] << 8) + read_value[23];
+
+		goto out;
+			}
+		}
+
+		pr_err("failed to read OTP value\n");
+		//Disable OTP access
+		ret = s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+                           s_ctrl->sensor_i2c_client, 0x3500, 0x00, MSM_CAMERA_I2C_BYTE_DATA);
+		if (ret) {
+			pr_err("failed to disable OTP_STA\n");
+			return ret;
+		}
+		return -EIO;
+	}
+	else{
+		return 0;
+	}
+
+out:
+	// memcpy
+	for(i = 0; i < 32; i++)
+		otp_data[i] = (uint8_t) read_value[i];
+
+	buf->af_inf_pos = read_value[0]<<8 | read_value[1];
+	buf->af_30cm_pos = read_value[2]<<8 | read_value[3];
+	buf->af_10cm_pos = read_value[4]<<8 | read_value[5];
+	buf->af_start_curr = read_value[6]<<8 | read_value[7];
+	buf->module_id = read_value[8];
+	buf->vendor_id = read_value[9];
+
+	create_camera_proc_file();
+	return 0;
+
+}
+
+//ASUS_BSP---
 
 static struct msm_sensor_ctrl_t *get_sctrl(struct v4l2_subdev *sd)
 {
@@ -1372,6 +1762,7 @@ static struct msm_sensor_fn_t msm_sensor_func_tbl = {
 	.sensor_power_up = msm_sensor_power_up,
 	.sensor_power_down = msm_sensor_power_down,
 	.sensor_match_id = msm_sensor_match_id,
+	.sensor_read_otp = msm_sensor_read_otp,
 };
 
 static struct msm_camera_i2c_fn_t msm_sensor_cci_func_tbl = {

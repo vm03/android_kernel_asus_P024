@@ -1872,11 +1872,16 @@ static void therm_reset_notify(struct therm_threshold *thresh_data)
 	set_threshold(thresh_data->sensor_id, thresh_data->threshold);
 }
 
+extern int entry_mode;
+
 #ifdef CONFIG_SMP
 static void __ref do_core_control(long temp)
 {
 	int i = 0;
 	int ret = 0;
+
+	if (entry_mode == 4)
+		return;
 
 	if (!core_control_enabled)
 		return;

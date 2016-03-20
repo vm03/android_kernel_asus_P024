@@ -655,6 +655,48 @@ static void usb_audio_disconnect(struct usb_interface *intf)
 
 #ifdef CONFIG_PM
 
+// cmedia, eden
+// 2015-06-25
+static int SetCmediaDeltaSigmaReset(struct snd_usb_audio *chip)  // for CM-6206LX
+{
+	int err = -1;
+	int dwTemp = (0x20) | (0x3000 << 8) | (0x05 << 24);
+
+	// low
+	dwTemp &= ~(0x1 << (13 + 8));
+
+	if ((err = snd_usb_ctl_msg(chip->dev, usb_sndctrlpipe(chip->dev, 0),
+					0x09,   // request
+					USB_TYPE_CLASS | USB_RECIP_INTERFACE | USB_DIR_OUT, // requesttype
+					0x0200, // value
+					0x0003, // index
+					&dwTemp, sizeof(int))) < 0)
+	{
+		snd_printk(KERN_ERR "SetCmediaDeltaSigmaReset() low error\n");
+	} else {
+		//snd_printk(KERN_DEBUG "SetCmediaDeltaSigmaReset() low success\n");
+		pr_debug("SetCmediaDeltaSigmaReset() low success\n");
+	}
+
+	// high
+	dwTemp |= (0x1 << (13 + 8));
+
+	if ((err = snd_usb_ctl_msg(chip->dev, usb_sndctrlpipe(chip->dev, 0),
+					0x09,   // request
+					USB_TYPE_CLASS | USB_RECIP_INTERFACE | USB_DIR_OUT, // requesttype
+					0x0200, // value
+					0x0003, // index
+					&dwTemp, sizeof(int))) < 0)
+	{
+		snd_printk(KERN_ERR "SetCmediaDeltaSigmaReset() high error\n");
+	} else {
+		pr_debug("SetCmediaDeltaSigmaReset() high success\n");
+//		snd_printk(KERN_DEBUG "SetCmediaDeltaSigmaReset() high success\n");
+	}
+
+	return err;
+}
+
 int snd_usb_autoresume(struct snd_usb_audio *chip)
 {
 	int err = -ENODEV;
@@ -665,6 +707,13 @@ int snd_usb_autoresume(struct snd_usb_audio *chip)
 	else if (!chip->shutdown)
 		err = usb_autopm_get_interface(chip->pm_intf);
 	up_read(&chip->shutdown_rwsem);
+
+	// cmedia, eden
+	if (chip->usb_id == USB_ID(0x0d8c, 0x0102)) {
+//		snd_printk(KERN_INFO "snd_usb_autoresume() : ca81 resume\n");
+		pr_debug("snd_usb_autoresume() : ca81 resume\n");
+		SetCmediaDeltaSigmaReset(chip);
+	}
 
 	return err;
 }

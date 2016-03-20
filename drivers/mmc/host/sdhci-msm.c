@@ -41,8 +41,13 @@
 #include <linux/iopoll.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/msm-bus.h>
+#include <linux/gpio.h>
+#include <linux/mmc/sd.h>
 
 #include "sdhci-pltfm.h"
+
+#define ASUS_SDCC_ATD_INTERFACE 1
+#define KEEP_CD_STATE
 
 enum sdc_mpm_pin_state {
 	SDC_DAT1_DISABLE,
@@ -314,6 +319,8 @@ struct sdhci_msm_pltfm_data {
 	unsigned char sup_clk_cnt;
 	int mpm_sdiowakeup_int;
 	int sdiowakeup_irq;
+	int vdd_en_gpio;
+	bool vdd_en_gpio_active_high;
 	enum pm_qos_req_type cpu_affinity_type;
 };
 
@@ -1293,6 +1300,7 @@ static int sdhci_msm_dt_parse_vreg_info(struct device *dev,
 	snprintf(prop_name, MAX_PROP_SIZE, "%s-supply", vreg_name);
 	if (!of_parse_phandle(np, prop_name, 0)) {
 		dev_info(dev, "No vreg data found for %s\n", vreg_name);
+		*vreg_data = NULL;
 		return ret;
 	}
 
@@ -1540,6 +1548,18 @@ static struct sdhci_msm_pltfm_data *sdhci_msm_populate_pdata(struct device *dev)
 		dev_err(dev, "failed parsing vdd data\n");
 		goto out;
 	}
+	if (pdata->vreg_data->vdd_data == NULL) {
+			/* parse alternative one */
+			pdata->vdd_en_gpio = of_get_named_gpio_flags(np, "vdd-en-gpio", 0, &flags);
+			if (!gpio_is_valid(pdata->vdd_en_gpio))
+					goto out;
+			if (!(flags & OF_GPIO_ACTIVE_LOW))
+					pdata->vdd_en_gpio_active_high = true;
+			pr_info("%s: got vdd_en_gpio: %d, active %s\n", __func__,
+					pdata->vdd_en_gpio,
+					pdata->vdd_en_gpio_active_high ? "high" : "low");
+	}
+
 	if (sdhci_msm_dt_parse_vreg_info(dev,
 					 &pdata->vreg_data->vdd_io_data,
 					 "vdd-io")) {
@@ -1988,7 +2008,22 @@ static int sdhci_msm_setup_vreg(struct sdhci_msm_pltfm_data *pdata,
 				ret = sdhci_msm_vreg_disable(vreg_table[i]);
 			if (ret)
 				goto out;
-		}
+		} else {
+                if (i > 0) continue;
+                /* setup VDD by gpio */
+                if (gpio_is_valid(pdata->vdd_en_gpio)) {
+                        if (enable) {
+                                gpio_set_value(pdata->vdd_en_gpio,
+                                               pdata->vdd_en_gpio_active_high ? 1 : 0);
+                                pr_debug("%s:%d:%d\n", __func__, __LINE__, gpio_get_value(pdata->vdd_en_gpio));
+                        } else {
+                                gpio_set_value(pdata->vdd_en_gpio,
+                                               pdata->vdd_en_gpio_active_high ? 0 : 1);
+                                pr_debug("%s:%d:%d\n", __func__, __LINE__, gpio_get_value(pdata->vdd_en_gpio));
+                        }
+                        mdelay(20);
+                }
+        }
 	}
 out:
 	return ret;
@@ -2037,6 +2072,15 @@ static int sdhci_msm_vreg_init(struct device *dev,
 		ret = sdhci_msm_vreg_init_reg(dev, curr_vdd_reg);
 		if (ret)
 			goto out;
+	} else {
+            /* vdd is control by GPIO */
+            ret = gpio_request_one(pdata->vdd_en_gpio,
+                                   GPIOF_DIR_OUT | GPIOF_INIT_LOW,
+                                   "SD_LDO_EN");
+            if (ret) {
+                    pr_err("%s: gpio_request(%d, SD_LDO_EN) failed %d\n",
+                           __func__, pdata->vdd_en_gpio, ret);
+            }
 	}
 	if (curr_vdd_io_reg) {
 		ret = sdhci_msm_vreg_init_reg(dev, curr_vdd_io_reg);
@@ -2995,7 +3039,109 @@ static void sdhci_set_default_hw_caps(struct sdhci_msm_host *msm_host,
 	caps &= ~CORE_SYS_BUS_SUPPORT_64_BIT;
 	writel_relaxed(caps, host->ioaddr + CORE_VENDOR_SPEC_CAPABILITIES0);
 }
+/*SDCC ATD INTERFACE*/
+static ssize_t eMMC_name_check(struct device *dev, struct device_attribute *attr, char *buf)
+{
+        struct sdhci_host *host = dev_get_drvdata(dev);
+        struct mmc_host *mmc;
 
+        if (!host)
+                return 0;
+
+        mmc = host->mmc;
+        if (mmc && mmc->card && (mmc_card_mmc(mmc->card) || mmc_card_sd(mmc->card)))
+                return snprintf(buf, PAGE_SIZE, "%s\n", mmc->card->cid.prod_name);
+        return 0;
+}
+
+static ssize_t fw_version_catch(struct device *dev, struct device_attribute *attr, char *buf)
+{
+        struct sdhci_host *host = dev_get_drvdata(dev);
+        struct mmc_host *mmc;
+        int bit;
+
+        if (!host)
+                return 0;
+
+        mmc = host->mmc;
+        if (mmc && mmc->card && mmc_card_mmc(mmc->card)) {
+                bit = mmc->card->raw_cid[2];
+                return snprintf(buf, PAGE_SIZE, "0x%x\n", (bit >> 16) & 0xff);
+        }
+        return 0;
+}
+
+static ssize_t eMMC_sector_size(struct device *dev, struct device_attribute *attr, char *buf)
+{
+        struct sdhci_host *host = dev_get_drvdata(dev);
+        struct mmc_host *mmc;
+
+        if (!host)
+                return 0;
+
+        mmc = host->mmc;
+        if (mmc && mmc->card && mmc_card_mmc(mmc->card))
+                return snprintf(buf, PAGE_SIZE, "0x%x\n", mmc->card->ext_csd.sectors);
+        return 0;
+}
+
+static ssize_t SD_status(struct device *dev, struct device_attribute *attr, char *buf)
+{
+        struct sdhci_host *host = dev_get_drvdata(dev);
+        struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+        struct sdhci_msm_host *msm_host = pltfm_host->priv;
+        unsigned int pin = msm_host->pdata->status_gpio;
+        int status;
+
+        if (!gpio_is_valid(pin))
+                return 0;
+
+        status = gpio_get_value(pin);
+        if(status == 0 )
+            return snprintf(buf, PAGE_SIZE, "1\n");
+        else
+            return snprintf(buf, PAGE_SIZE, "0\n");
+}
+
+/* total size is 2^n GB, e.g: 4/8/16/32/64/128 */
+static ssize_t eMMC_total_size(struct device *dev, struct device_attribute *attr, char *buf)
+{
+        struct sdhci_host *host = dev_get_drvdata(dev);
+        struct mmc_host *mmc;
+        int i;
+
+        if (!host)
+                return 0;
+
+        mmc = host->mmc;
+        if (mmc && mmc->card && mmc_card_mmc(mmc->card)) {
+                i = fls(mmc->card->ext_csd.sectors);
+                if (i > 21) {
+                        /* 4GB or above */
+                        return snprintf(buf, PAGE_SIZE, "%d\n", (mmc->card->ext_csd.sectors >> (i - 1)) << (i - 21));
+                } else {
+                        pr_err("wrong sector count");
+                }
+        }
+        return 0;
+}
+
+static DEVICE_ATTR(card_name, S_IRUGO, eMMC_name_check, NULL);
+static DEVICE_ATTR(emmc_fw, S_IRUGO, fw_version_catch, NULL);
+static DEVICE_ATTR(emmc_size, S_IRUGO, eMMC_sector_size, NULL);
+static DEVICE_ATTR(sd_status, S_IRUGO, SD_status, NULL);
+static DEVICE_ATTR(emmc_total_size, S_IRUGO, eMMC_total_size, NULL);
+static struct attribute *dev_attrs[] = {
+        &dev_attr_card_name.attr,
+        &dev_attr_emmc_fw.attr,
+        &dev_attr_emmc_size.attr,
+        &dev_attr_sd_status.attr,
+        &dev_attr_emmc_total_size.attr,
+        NULL,
+};
+static struct attribute_group dev_attr_grp = {
+        .attrs = dev_attrs,
+};
 static int sdhci_msm_probe(struct platform_device *pdev)
 {
 	struct sdhci_host *host;
@@ -3269,6 +3415,7 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	msm_host->mmc->caps2 |= MMC_CAP2_ASYNC_SDIO_IRQ_4BIT_MODE;
 	msm_host->mmc->pm_caps |= MMC_PM_KEEP_POWER | MMC_PM_WAKE_SDIO_IRQ;
 	msm_host->mmc->caps2 |= MMC_CAP2_CORE_PM;
+    msm_host->mmc->caps2 |= MMC_CAP2_DEFERRED_RESUME;
 
 	if (msm_host->pdata->nonremovable)
 		msm_host->mmc->caps |= MMC_CAP_NONREMOVABLE;
@@ -3329,6 +3476,11 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 			spin_unlock_irqrestore(&host->lock, flags);
 		}
 	}
+	pr_info("%s: caps=0x%08x, caps2=0x%08x, pm_caps=0x%08x, "
+		"quirks=0x%08x, quirks2=0x%08x\n",
+		mmc_hostname(host->mmc),
+		host->mmc->caps, host->mmc->caps2, host->mmc->pm_caps,
+		host->quirks, host->quirks2);
 
 	ret = sdhci_add_host(host);
 	if (ret) {
@@ -3387,6 +3539,12 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 
 	device_enable_async_suspend(&pdev->dev);
 	/* Successful initialization */
+
+#ifdef ASUS_SDCC_ATD_INTERFACE
+    if (sysfs_create_group(&pdev->dev.kobj, &dev_attr_grp))
+            pr_err("%s: unable to create ATD interface\n",
+			       mmc_hostname(host->mmc));
+#endif
 	goto out;
 
 remove_max_bus_bw_file:
@@ -3437,11 +3595,17 @@ static int sdhci_msm_remove(struct platform_device *pdev)
 			0xffffffff);
 
 	pr_debug("%s: %s\n", dev_name(&pdev->dev), __func__);
+	if (gpio_is_valid(pdata->vdd_en_gpio))
+		gpio_free(pdata->vdd_en_gpio);
+
 	if (!gpio_is_valid(msm_host->pdata->status_gpio))
 		device_remove_file(&pdev->dev, &msm_host->polling);
 	device_remove_file(&pdev->dev, &msm_host->msm_bus_vote.max_bus_bw);
 	sdhci_remove_host(host, dead);
 	pm_runtime_disable(&pdev->dev);
+#ifdef ASUS_SDCC_ATD_INTERFACE
+    sysfs_remove_group(&pdev->dev.kobj, &dev_attr_grp);
+#endif
 	sdhci_pltfm_free(pdev);
 
 	if (sdhci_is_valid_mpm_wakeup_int(msm_host))
@@ -3575,12 +3739,16 @@ skip_enable_host_irq:
 static int sdhci_msm_suspend(struct device *dev)
 {
 	struct sdhci_host *host = dev_get_drvdata(dev);
+#ifndef KEEP_CD_STATE
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_msm_host *msm_host = pltfm_host->priv;
+#endif
 	int ret = 0;
 
+#ifndef KEEP_CD_STATE
 	if (gpio_is_valid(msm_host->pdata->status_gpio))
 		mmc_gpio_free_cd(msm_host->mmc);
+#endif
 
 	if (pm_runtime_suspended(dev)) {
 		pr_debug("%s: %s: already runtime suspended\n",
@@ -3596,10 +3764,13 @@ out:
 static int sdhci_msm_resume(struct device *dev)
 {
 	struct sdhci_host *host = dev_get_drvdata(dev);
+#ifndef KEEP_CD_STATE
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_msm_host *msm_host = pltfm_host->priv;
+#endif
 	int ret = 0;
 
+#ifndef KEEP_CD_STATE
 	if (gpio_is_valid(msm_host->pdata->status_gpio)) {
 		ret = mmc_gpio_request_cd(msm_host->mmc,
 				msm_host->pdata->status_gpio);
@@ -3607,6 +3778,7 @@ static int sdhci_msm_resume(struct device *dev)
 			pr_err("%s: %s: Failed to request card detection IRQ %d\n",
 					mmc_hostname(host->mmc), __func__, ret);
 	}
+#endif
 
 	if (pm_runtime_suspended(dev)) {
 		pr_debug("%s: %s: runtime suspended, defer system resume\n",

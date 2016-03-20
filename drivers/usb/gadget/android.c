@@ -56,6 +56,7 @@
 #include "u_ctrl_hsuart.c"
 #include "u_data_hsuart.c"
 #include "f_ccid.c"
+#include "f_pclink.c"
 #include "f_mtp.c"
 #include "f_accessory.c"
 #include "f_rndis.c"
@@ -239,6 +240,9 @@ static int usb_diag_update_pid_and_serial_num(uint32_t pid, const char *snum);
 static char manufacturer_string[256];
 static char product_string[256];
 static char serial_string[256];
+//2015 Nick : For factory test
+char *original_usb_serial_number =NULL;
+EXPORT_SYMBOL(original_usb_serial_number);
 
 /* String Table */
 static struct usb_string strings_dev[] = {
@@ -700,6 +704,42 @@ static void *functionfs_acquire_dev_callback(const char *dev_name)
 static void functionfs_release_dev_callback(struct ffs_data *ffs_data)
 {
 }
+/*-------------------------------------------------------------------------*/
+/* Supported functions initialization. Jeffrey: ASUS PCLink AP new adb, f_pclink.c */
+
+struct conn_gadget_data {
+	bool opened;
+	bool enabled;
+};
+
+static int pclink_function_init(struct android_usb_function *f,
+		struct usb_composite_dev *cdev)
+{
+	f->config = kzalloc(sizeof(struct conn_gadget_data), GFP_KERNEL);
+	if (!f->config)
+		return -ENOMEM;
+
+	return conn_gadget_setup();
+}
+
+static void pclink_function_cleanup(struct android_usb_function *f)
+{
+	conn_gadget_cleanup();
+	kfree(f->config);
+}
+
+static int pclink_function_bind_config(struct android_usb_function *f,
+		struct usb_configuration *c)
+{
+	return conn_gadget_bind_config(c);
+}
+
+static struct android_usb_function pclink_function = {
+	.name = "pclink",
+	.init = pclink_function_init,
+	.cleanup = pclink_function_cleanup,
+	.bind_config = pclink_function_bind_config,
+};
 
 /* ACM */
 static char acm_transports[32];	/*enabled ACM ports - "tty[,sdio]"*/
@@ -2407,8 +2447,13 @@ static int mass_storage_function_init(struct android_usb_function *f,
 	int err;
 	int i, n;
 	char name[FSG_MAX_LUNS][MAX_LUN_NAME];
+// Z380KL close uicc disk for mass storage function
+#if defined(CONFIG_Z380KL)
+	u8 uicc_nluns = 0;
+#else
 	u8 uicc_nluns = dev->pdata ? dev->pdata->uicc_nluns : 0;
-
+#endif
+	printk("mass_storage_function_init start\n");
 	config = kzalloc(sizeof(struct mass_storage_function_config),
 							GFP_KERNEL);
 	if (!config) {
@@ -2417,9 +2462,10 @@ static int mass_storage_function_init(struct android_usb_function *f,
 	}
 
 	config->fsg.nluns = 1;
-	snprintf(name[0], MAX_LUN_NAME, "lun");
+	snprintf(name[0], MAX_LUN_NAME, "rom");
 	config->fsg.luns[0].removable = 1;
-
+	config->fsg.luns[0].cdrom = 1;
+	config->fsg.luns[0].ro = 1;
 	if (dev->pdata && dev->pdata->cdrom) {
 		config->fsg.luns[config->fsg.nluns].cdrom = 1;
 		config->fsg.luns[config->fsg.nluns].ro = 1;
@@ -2792,6 +2838,7 @@ static struct android_usb_function *supported_functions[] = {
 	&diag_function,
 	&qdss_function,
 	&serial_function,
+	&pclink_function,
 	&ccid_function,
 	&acm_function,
 	&mtp_function,
@@ -3493,7 +3540,10 @@ static int android_bind(struct usb_composite_dev *cdev)
 	strlcpy(manufacturer_string, "Android",
 		sizeof(manufacturer_string) - 1);
 	strlcpy(product_string, "Android", sizeof(product_string) - 1);
-	strlcpy(serial_string, "0123456789ABCDEF", sizeof(serial_string) - 1);
+	strlcpy(serial_string, "1111111111111111", sizeof(serial_string) - 1);
+
+	//2015 Nick: For Factory test
+	original_usb_serial_number = serial_string;
 
 	id = usb_string_id(cdev);
 	if (id < 0)

@@ -47,6 +47,9 @@ static ssize_t power_supply_show_property(struct device *dev,
 		"Unknown", "Battery", "UPS", "Mains", "USB",
 		"USB_DCP", "USB_CDP", "USB_ACA", "Wireless", "BMS",
 		"USB_Parallel"
+		,"PackBattery" /* chris: add for Cover Pack Battery */
+		,"PackAC" /* chris: add for Cover Pack Battery */
+		,"USB_OTG" /* chris: add OTG online */
 	};
 	static char *status_text[] = {
 		"Unknown", "Charging", "Discharging", "Not charging", "Full"
@@ -140,6 +143,9 @@ static struct device_attribute power_supply_attrs[] = {
 	/* Properties of type `int' */
 	POWER_SUPPLY_ATTR(status),
 	POWER_SUPPLY_ATTR(charge_type),
+#if defined(CONFIG_Z380C) || defined(CONFIG_Z380KL)
+	POWER_SUPPLY_ATTR(pack_type),
+#endif
 	POWER_SUPPLY_ATTR(health),
 	POWER_SUPPLY_ATTR(present),
 	POWER_SUPPLY_ATTR(online),

@@ -14,33 +14,6 @@
 #include "msm8939-camera-sensor-mtp.dtsi"
 
 &soc {
-	i2c@78b9000 { /* BLSP1 QUP5 */
-		synaptics@20 {
-			compatible = "synaptics,dsx";
-			reg = <0x20>;
-			interrupt-parent = <&msm_gpio>;
-			interrupts = <13 0x2008>;
-			avdd-supply = <&pm8916_l17>;
-			vdd-supply = <&pm8916_l6>;
-			/* pins used by touchscreen */
-			pinctrl-names = "pmx_ts_active","pmx_ts_suspend","pmx_ts_suspend";
-			pinctrl-0 = <&ts_int_active &ts_reset_active>;
-			pinctrl-1 = <&ts_int_suspend &ts_reset_suspend>;
-			pinctrl-2 = <&ts_release>;
-			synaptics,irq-gpio = <&msm_gpio 13 0x2008>;
-			synaptics,reset-gpio = <&msm_gpio 12 0x0>;
-			synaptics,i2c-pull-up;
-			synaptics,power-down;
-			synaptics,disable-gpios;
-			synaptics,display-coords = <0 0 1079 1919>;
-			synaptics,panel-coords = <0 0 1079 2084>;
-			/* Underlying clocks used by secure touch */
-			clocks = <&clock_gcc clk_gcc_blsp1_ahb_clk>,
-			 <&clock_gcc clk_gcc_blsp1_qup5_i2c_apps_clk>;
-			clock-names = "iface_clk", "core_clk";
-		};
-	};
-
 	gen-vkeys {
 		compatible = "qcom,gen-vkeys";
 		label = "synaptics_dsx";

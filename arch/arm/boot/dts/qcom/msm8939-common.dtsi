@@ -62,6 +62,12 @@
 			reg = <0x0 0x8bd00000 0x0 0x0600000>;
 			label = "peripheral_mem";
 		};
+		
+		mba_mem: mba_region@0 {
+			linux,reserve-contiguous-region;
+			reg = <0 0 0 0x0200000>;
+			label = "mba_mem";
+		};
 
 		venus_mem: venus_region@0 {
 			linux,reserve-contiguous-region;
@@ -789,7 +795,7 @@
 		qcom,vdd-voltage-level = <1 5 7>;
 
 		qcom,hsusb-otg-phy-init-seq =
-			<0x44 0x80 0x6B 0x81 0x24 0x82 0x13 0x83 0xffffffff>;
+			<0x44 0x80 0x7C 0x81 0x30 0x82 0x13 0x83 0xffffffff>;
 		qcom,hsusb-otg-phy-type = <2>;
 		qcom,hsusb-otg-mode = <1>;
 		qcom,hsusb-otg-otg-control = <2>;
@@ -822,7 +828,7 @@
 		compatible = "qcom,android-usb";
 		reg = <0x086000c8 0xc8>;
 		qcom,pm-qos-latency = <2 1001 12701>;
-		qcom,streaming-func = "mtp";
+		qcom,streaming-func = "rndis","mtp";
 		qcom,android-usb-uicc-nluns = /bits/ 8 <1>;
 	};
 
@@ -966,7 +972,7 @@
 		      <0x7884000 0x23000>;
 		interrupt-names = "qup_irq", "bam_irq";
 		interrupts = <0 99 0>, <0 238 0>;
-		qcom,clk-freq-out = <100000>;
+		qcom,clk-freq-out = <400000>;
 		qcom,clk-freq-in  = <19200000>;
 		clock-names = "iface_clk", "core_clk";
 		clocks = <&clock_gcc clk_gcc_blsp1_ahb_clk>,
@@ -1202,7 +1208,7 @@
 		qcom,scm_core_clk_src = <80000000>;
 
 		qcom,pas-id = <9>;
-		qcom,proxy-timeout-ms = <5000>;
+		qcom,proxy-timeout-ms = <100>;
 		qcom,firmware-name = "venus";
 		linux,contiguous-region = <&venus_mem>;
 	};
@@ -1248,6 +1254,11 @@
 		/* GPIO output to mss */
 		qcom,gpio-force-stop = <&smp2pgpio_ssr_smp2p_1_out 0 0>;
 		linux,contiguous-region = <&modem_adsp_mem>;
+
+		qcom,mba-mem@0 {
+			compatible = "qcom,pil-mba-mem";
+			linux,contiguous-region = <&mba_mem>;
+		};
 	};
 
 	pcm0: qcom,msm-pcm {

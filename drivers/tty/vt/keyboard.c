@@ -599,7 +599,7 @@ static void fn_show_state(struct vc_data *vc)
 
 static void fn_boot_it(struct vc_data *vc)
 {
-	ctrl_alt_del();
+//	ctrl_alt_del();
 }
 
 static void fn_compose(struct vc_data *vc)

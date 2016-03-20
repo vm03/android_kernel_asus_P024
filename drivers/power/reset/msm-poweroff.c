@@ -238,6 +238,7 @@ static void msm_restart_prepare(const char *cmd)
 			((cmd != NULL && cmd[0] != '\0') &&
 			strcmp(cmd, "recovery") &&
 			strcmp(cmd, "bootloader") &&
+			strcmp(cmd, "charger") &&
 			strcmp(cmd, "rtc")))
 			need_warm_reset = true;
 	}
@@ -262,6 +263,11 @@ static void msm_restart_prepare(const char *cmd)
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_RTC);
 			__raw_writel(0x77665503, restart_reason);
+		} else if (!strcmp(cmd, "charger")) { /* chris */
+			pr_err("reboot to charger mode\n");
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_COS);
+			__raw_writel(0x77665504, restart_reason);
 		} else if (!strncmp(cmd, "oem-", 4)) {
 			unsigned long code;
 			int ret;

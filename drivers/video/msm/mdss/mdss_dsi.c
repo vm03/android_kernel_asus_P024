@@ -23,6 +23,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/leds-qpnp-wled.h>
 #include <linux/clk.h>
+#include <linux/HWVersion.h>
 
 #include "mdss.h"
 #include "mdss_panel.h"
@@ -30,6 +31,28 @@
 #include "mdss_debug.h"
 
 #define XO_CLK_RATE	19200000
+
+// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+int lcm_id2 = 0;
+extern void cadiz_suspend(void);
+extern void cadiz_resume(void);
+extern void cadiz_rest_gpio(void);
+extern int is_cadiz_support(void);
+extern int cadiz_init_polling(u16 reg, u8 value);
+extern int cadiz_i2c_reg_write(u16 reg, u8 value);
+extern int cadiz_init_boot1(void);
+extern int cadiz_init_ipc_ibc(void);
+extern int cadiz_init_boot2(void);
+extern int cadiz_init_boot3(void);
+extern int cadiz_init_boot4(void);
+#endif
+// cadiz -----
+
+// read panel id +++++
+#include <linux/proc_fs.h>
+static struct proc_dir_entry *proc_lcm_id = NULL;
+// read panel id -----
 
 static int mdss_dsi_pinctrl_set_state(struct mdss_dsi_ctrl_pdata *ctrl_pdata,
 					bool active);
@@ -489,6 +512,9 @@ static int mdss_dsi_off(struct mdss_panel_data *pdata, int power_state)
 		mdss_dsi_phy_disable(ctrl_pdata);
 	}
 
+	MIPI_OUTP((ctrl_pdata->ctrl_base) + 0xac, 0);
+	wmb();
+
 	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 0);
 
 panel_power_ctrl:
@@ -573,7 +599,6 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 		pr_debug("%s: dsi_on from panel low power state\n", __func__);
 		goto end;
 	}
-
 	/*
 	 * Enable DSI bus clocks prior to resetting and initializing DSI
 	 * Phy. Phy and ctrl setup need to be done before enabling the link
@@ -590,6 +615,7 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_LINK_CLKS, 1);
 	mdss_dsi_sw_reset(ctrl_pdata, true);
 
+
 	/*
 	 * Issue hardware reset line after enabling the DSI clocks and data
 	 * data lanes for LP11 init
@@ -602,15 +628,6 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 
 	if (mipi->init_delay)
 		usleep(mipi->init_delay);
-
-	if (mipi->force_clk_lane_hs) {
-		u32 tmp;
-
-		tmp = MIPI_INP((ctrl_pdata->ctrl_base) + 0xac);
-		tmp |= (1<<28);
-		MIPI_OUTP((ctrl_pdata->ctrl_base) + 0xac, tmp);
-		wmb();
-	}
 
 	if (pdata->panel_info.type == MIPI_CMD_PANEL)
 		mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 0);
@@ -1188,6 +1205,31 @@ int mdss_dsi_register_recovery_handler(struct mdss_dsi_ctrl_pdata *ctrl,
 	return 0;
 }
 
+// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+static void mdss_dsi_force_clock_hs(struct mdss_panel_data *pdata){
+	struct mipi_panel_info *mipi;
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+
+	mipi=&pdata->panel_info.mipi;
+	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata, panel_data);
+
+	if (mipi->force_clk_lane_hs) {
+		u32 tmp;
+		mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 1);
+		tmp = MIPI_INP((ctrl_pdata->ctrl_base) + 0xac);
+		tmp |= (1<<28);
+		MIPI_OUTP((ctrl_pdata->ctrl_base) + 0xac, tmp);
+		wmb();
+		mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 0);
+	}
+}
+#endif
+// cadiz -----
+
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+static bool first_init = true;
+#endif
 static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 				  int event, void *arg)
 {
@@ -1207,19 +1249,65 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 
 	switch (event) {
 	case MDSS_EVENT_LINK_READY:
+		// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+		if(is_cadiz_support()&&!first_init)
+			cadiz_resume();
+#endif
+		// cadiz -----
 		rc = mdss_dsi_on(pdata);
 		mdss_dsi_op_mode_config(pdata->panel_info.mipi.mode,
 							pdata);
 		break;
 	case MDSS_EVENT_UNBLANK:
+		// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+		if(is_cadiz_support()&&!first_init) {
+			cadiz_i2c_reg_write(0x0830, 0x00);
+			cadiz_init_polling(0x0207,0x40);
+		}
+#endif
+		// cadiz -----
+		mdss_dsi_get_hw_revision(ctrl_pdata);
 		if (ctrl_pdata->on_cmds.link_state == DSI_LP_MODE)
 			rc = mdss_dsi_unblank(pdata);
+		// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+		if(is_cadiz_support()&&!first_init) {
+			printk("[DISPLAY] cadiz i2c first part start\n");
+			cadiz_init_polling(0x0404,0x38);
+			cadiz_init_boot1();
+			cadiz_init_ipc_ibc();
+			cadiz_init_boot2();
+			printk("[DISPLAY] cadiz i2c first part end\n");
+		}
+#endif
+		// cadiz -----
 		break;
 	case MDSS_EVENT_PANEL_ON:
 		ctrl_pdata->ctrl_state |= CTRL_STATE_MDP_ACTIVE;
+		// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+		if(is_cadiz_support()&&!first_init)
+			mdss_dsi_force_clock_hs(pdata);
+#endif
+		// cadiz -----
 		if (ctrl_pdata->on_cmds.link_state == DSI_HS_MODE)
 			rc = mdss_dsi_unblank(pdata);
-		pdata->panel_info.esd_rdy = true;
+		pdata->panel_info.esd_rdy = true; // Jui note
+		// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+		if(is_cadiz_support()&&!first_init) {
+			printk("[DISPLAY] cadiz i2c second part start\n");
+			cadiz_init_boot3();
+			cadiz_init_polling(0x0207,0x40);
+			cadiz_init_boot4();
+			printk("[DISPLAY] cadiz i2c second part end\n");
+		}
+
+		first_init = false;
+#endif
+		// cadiz -----
 		break;
 	case MDSS_EVENT_BLANK:
 		power_state = (int) (unsigned long) arg;
@@ -1233,6 +1321,12 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		if (ctrl_pdata->off_cmds.link_state == DSI_LP_MODE)
 			rc = mdss_dsi_blank(pdata, power_state);
 		rc = mdss_dsi_off(pdata, power_state);
+		// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+		if(is_cadiz_support()&&!first_init)
+			cadiz_suspend();
+#endif
+		// cadiz -----
 		break;
 	case MDSS_EVENT_CONT_SPLASH_FINISH:
 		if (ctrl_pdata->off_cmds.link_state == DSI_LP_MODE)
@@ -1274,9 +1368,6 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		rc = mdss_dsi_register_recovery_handler(ctrl_pdata,
 			(struct mdss_intf_recovery *)arg);
 		break;
-	case MDSS_EVENT_INTF_RESTORE:
-		mdss_dsi_ctrl_phy_restore(ctrl_pdata);
-		break;
 	default:
 		pr_debug("%s: unhandled event=%d\n", __func__, event);
 		break;
@@ -1292,8 +1383,19 @@ static struct device_node *mdss_dsi_pref_prim_panel(
 
 	pr_debug("%s:%d: Select primary panel from dt\n",
 					__func__, __LINE__);
+
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+		if(lcm_id2)
+			dsi_pan_node = of_parse_phandle(pdev->dev.of_node,
+							"qcom,dsi-pref-prim-pan-rm27013", 0);
+		else
+			dsi_pan_node = of_parse_phandle(pdev->dev.of_node,
+							"qcom,dsi-pref-prim-pan-ili6136s", 0);
+#else
 	dsi_pan_node = of_parse_phandle(pdev->dev.of_node,
-					"qcom,dsi-pref-prim-pan", 0);
+						"qcom,dsi-pref-prim-pan", 0);
+#endif
+
 	if (!dsi_pan_node)
 		pr_err("%s:can't find panel phandle\n", __func__);
 
@@ -1375,6 +1477,22 @@ end:
 		dsi_pan_node = mdss_dsi_pref_prim_panel(pdev);
 
 	return dsi_pan_node;
+}
+
+static ssize_t lcm_id_state_read_proc (struct file *file, char __user *page, size_t size, loff_t *ppos)
+{
+	return sprintf(page, "%d\n", lcm_id2);
+}
+
+static const struct file_operations proc_lcm_id_struct =
+{
+        .owner = THIS_MODULE,
+        .read = lcm_id_state_read_proc,
+};
+
+void create_lcm_id_proc(void)
+{
+	proc_lcm_id = proc_create( "lcm_id", 0, NULL, &proc_lcm_id_struct);
 }
 
 static int mdss_dsi_ctrl_probe(struct platform_device *pdev)
@@ -1522,6 +1640,9 @@ static int mdss_dsi_ctrl_probe(struct platform_device *pdev)
 		}
 		disable_irq(gpio_to_irq(ctrl_pdata->disp_te_gpio));
 	}
+
+	create_lcm_id_proc();
+
 	pr_debug("%s: Dsi Ctrl->%d initialized\n", __func__, index);
 	return 0;
 
@@ -1665,6 +1786,9 @@ int dsi_panel_device_register(struct device_node *pan_node,
 	struct platform_device *ctrl_pdev = NULL;
 	const char *data;
 	struct resource *res;
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+	int gpio_102;
+#endif
 
 	mipi  = &(pinfo->mipi);
 
@@ -1775,10 +1899,15 @@ int dsi_panel_device_register(struct device_node *pan_node,
 	 *  while parsing the panel node, then do not override it
 	 */
 	if (ctrl_pdata->disp_en_gpio <= 0) {
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+			ctrl_pdata->disp_en_gpio = of_get_named_gpio(
+				ctrl_pdev->dev.of_node,
+				"qcom,platform-enable-gpio", 0);
+#else
 		ctrl_pdata->disp_en_gpio = of_get_named_gpio(
 			ctrl_pdev->dev.of_node,
 			"qcom,platform-enable-gpio", 0);
-
+#endif
 		if (!gpio_is_valid(ctrl_pdata->disp_en_gpio))
 			pr_err("%s:%d, Disp_en gpio not specified\n",
 					__func__, __LINE__);
@@ -1791,8 +1920,20 @@ int dsi_panel_device_register(struct device_node *pan_node,
 		pr_err("%s:%d, TE gpio not specified\n",
 						__func__, __LINE__);
 
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+		ctrl_pdata->bklt_en_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
+			"qcom,platform-bklight-en-gpio", 0);
+
+		gpio_102 = of_get_named_gpio(ctrl_pdev->dev.of_node,
+				 "qcom,platform-lcm-id2", 0);
+		if (!gpio_is_valid(gpio_102))
+			pr_err("%s:%d, lcm_id2 gpio not specified\n",
+							__func__, __LINE__);
+		lcm_id2 = gpio_get_value(gpio_102);
+#else
 	ctrl_pdata->bklt_en_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
 		"qcom,platform-bklight-en-gpio", 0);
+#endif
 	if (!gpio_is_valid(ctrl_pdata->bklt_en_gpio))
 		pr_info("%s: bklt_en gpio not specified\n", __func__);
 

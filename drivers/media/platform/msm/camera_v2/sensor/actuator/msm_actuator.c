@@ -13,6 +13,8 @@
 #define pr_fmt(fmt) "%s:%d " fmt, __func__, __LINE__
 
 #include <linux/module.h>
+#include <linux/proc_fs.h>  //ASUS_BSP For DIT VCM Debug Interface+++
+#include <linux/seq_file.h>  //ASUS_BSP For DIT VCM Debug Interface+++
 #include "msm_sd.h"
 #include "msm_actuator.h"
 #include "msm_cci.h"
@@ -21,6 +23,92 @@ DEFINE_MSM_MUTEX(msm_actuator_mutex);
 
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
+
+//ASUS_BSP For DIT VCM Debug Interface+++
+#define CAMERA_PROC_FILE        "driver/camera_proc"
+static struct proc_dir_entry *camera_proc_file;
+static uint16_t vcm_steps = 0;
+
+static int camera_proc_read(struct seq_file *buf, void *v)
+{
+    pr_info("camera_proc_read vcm_steps %d\n", vcm_steps);
+    seq_printf(buf, "%d\n", vcm_steps);
+    return 0;
+}
+
+static int camera_proc_open(struct inode *inode, struct  file *file) {
+    return single_open(file, camera_proc_read, NULL);
+}
+
+static const struct file_operations camera_fops = {
+        .owner = THIS_MODULE,
+        .open = camera_proc_open,
+        //.write = camera_proc_write,
+        .read = seq_read,
+};
+
+static int create_camera_proc_file(void)
+{
+    camera_proc_file = proc_create(CAMERA_PROC_FILE, 0666, NULL,&camera_fops);
+    if(camera_proc_file){
+        printk("proc file create sucessed!\n");
+    }
+    else{
+        printk("proc file create failed!\n");
+    }
+    return 0;
+}
+
+static int remove_camera_proc_file(void)
+{
+    remove_proc_entry(CAMERA_PROC_FILE, NULL);
+    return 0;
+}
+//ASUS_BSP For DIT VCM Debug Interface---
+
+//ASUS_BSP+++ VCM noise reduction
+struct msm_actuator_ctrl_t *vcm_ctrl;
+void asus_actuator_move (int position){
+	u16 addr, value;
+	
+	if(position < 0){
+		position=0;
+	}else if(position > 1023){
+		position=1023;
+	}
+	
+	vcm_steps=position;
+	
+	addr=position >>4;
+	value=(position &0x0f ) <<4;
+	vcm_ctrl->i2c_client.i2c_func_tbl->i2c_write(&vcm_ctrl->i2c_client,addr,value,MSM_CAMERA_I2C_BYTE_DATA);
+}
+
+void asus_actuator_close(void){
+
+	int value=vcm_steps;
+	int stride=20;
+	int stime=10;
+
+	if(value <= 0){
+		return ;
+	}
+
+	while(value>=stride){
+		value-=stride;
+		asus_actuator_move(value);
+		msleep(stime);
+	}
+
+	if(value > 5){
+		asus_actuator_move(5);
+		msleep(stime);
+	}
+	asus_actuator_move(0);
+
+}
+//ASUS_BSP+++ VCM noise reduction
+
 
 static struct v4l2_file_operations msm_actuator_v4l2_subdev_fops;
 static int32_t msm_actuator_power_up(struct msm_actuator_ctrl_t *a_ctrl);
@@ -91,7 +179,14 @@ static void msm_actuator_parse_i2c_params(struct msm_actuator_ctrl_t *a_ctrl,
 				((hw_dword & write_arr[i].hw_mask) >>
 				write_arr[i].hw_shift);
 
-			if (write_arr[i].reg_addr != 0xFFFF) {
+                                //ASUS_BSP++ for VCM register
+				if (write_arr[i].reg_addr == 0x04) {
+                			i2c_byte1 = write_arr[i].reg_addr;
+                			i2c_byte2 = (value & 0xFF00) >> 8;
+				} else if (write_arr[i].reg_addr == 0x05) {
+                			i2c_byte1 = write_arr[i].reg_addr;
+                			i2c_byte2 =  value & 0xFF;
+				} else if (write_arr[i].reg_addr != 0xFFFF) {
 				i2c_byte1 = write_arr[i].reg_addr;
 				i2c_byte2 = value;
 				if (size != (i+1)) {
@@ -123,6 +218,8 @@ static void msm_actuator_parse_i2c_params(struct msm_actuator_ctrl_t *a_ctrl,
 		i2c_tbl[a_ctrl->i2c_tbl_index].reg_data = i2c_byte2;
 		i2c_tbl[a_ctrl->i2c_tbl_index].delay = delay;
 		a_ctrl->i2c_tbl_index++;
+
+		vcm_steps = next_lens_position;  //ASUS_BSP For DIT VCM Debug Interface+++
 	}
 	CDBG("Exit\n");
 }
@@ -134,6 +231,8 @@ static int32_t msm_actuator_init_focus(struct msm_actuator_ctrl_t *a_ctrl,
 	int32_t i = 0;
 	enum msm_camera_i2c_reg_addr_type save_addr_type;
 	CDBG("Enter\n");
+
+	create_camera_proc_file();  //ASUS_BSP For DIT VCM Debug Interface+++
 
 	save_addr_type = a_ctrl->i2c_client.addr_type;
 	for (i = 0; i < size; i++) {
@@ -847,6 +946,9 @@ static int msm_actuator_close(struct v4l2_subdev *sd,
 	int rc = 0;
 	struct msm_actuator_ctrl_t *a_ctrl =  v4l2_get_subdevdata(sd);
 	CDBG("Enter\n");
+
+        remove_camera_proc_file();  //ASUS_BSP For DIT VCM Debug Interface+++
+
 	if (!a_ctrl) {
 		pr_err("failed\n");
 		return -EINVAL;
@@ -1263,6 +1365,7 @@ static int32_t msm_actuator_platform_probe(struct platform_device *pdev)
 	msm_actuator_t->msm_sd.sd.devnode->fops =
 		&msm_actuator_v4l2_subdev_fops;
 
+        vcm_ctrl=msm_actuator_t; //ASUS_BSP+++ VCM noise reduction
 	CDBG("Exit\n");
 	return rc;
 }

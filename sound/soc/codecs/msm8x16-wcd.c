@@ -9,6 +9,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
+//#define DEBUG 1
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/firmware.h>
@@ -107,6 +108,27 @@ enum {
 
 #define VOLTAGE_CONVERTER(value, min_value, step_size)\
 	((value - min_value)/step_size);
+
+// joe_cheng : add for atd
+static int audio_codec_status = 0;
+static ssize_t audio_codec_status_show(struct device*, struct device_attribute*, char*);
+static ssize_t audio_codec_status_store(struct device *dev,
+        struct device_attribute *attr, const char *buf, size_t count);
+
+static ssize_t audio_codec_status_show(struct device* dev, struct device_attribute * attr, char* buf)
+{
+	printk("%s : audio_codec_status %d\n", __func__, audio_codec_status);
+	return sprintf(buf, "%d\n", audio_codec_status);
+}
+
+static ssize_t audio_codec_status_store(struct device *dev,
+        struct device_attribute *attr, const char *buf, size_t count)
+{
+	return 0;
+}
+
+static DEVICE_ATTR(audio_codec_status, S_IRUGO, audio_codec_status_show, audio_codec_status_store);
+
 
 enum {
 	AIF1_PB = 0,
@@ -2982,6 +3004,17 @@ static int msm8x16_wcd_hphr_dac_event(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
+static void enable_rx1_b6_work(struct work_struct *work)
+{
+	usleep_range(4000, 4100);
+	snd_soc_update_bits(registered_codec,
+			MSM8X16_WCD_A_CDC_RX1_B6_CTL, 0x01, 0x00);
+	snd_soc_update_bits(registered_codec,
+			MSM8X16_WCD_A_CDC_RX2_B6_CTL, 0x01, 0x00);
+	usleep_range(10000, 10100);
+}
+static DECLARE_DELAYED_WORK(rx1_b6_work, enable_rx1_b6_work);
+
 static int msm8x16_wcd_hph_pa_event(struct snd_soc_dapm_widget *w,
 			      struct snd_kcontrol *kcontrol, int event)
 {
@@ -3008,6 +3041,8 @@ static int msm8x16_wcd_hph_pa_event(struct snd_soc_dapm_widget *w,
 		break;
 
 	case SND_SOC_DAPM_POST_PMU:
+	// joe_cheng : workaround for headset noise, TT#603484
+	/*
 		usleep_range(4000, 4100);
 		if (w->shift == 5)
 			snd_soc_update_bits(codec,
@@ -3016,9 +3051,13 @@ static int msm8x16_wcd_hph_pa_event(struct snd_soc_dapm_widget *w,
 			snd_soc_update_bits(codec,
 				MSM8X16_WCD_A_CDC_RX2_B6_CTL, 0x01, 0x00);
 		usleep_range(10000, 10100);
+	*/
+		schedule_delayed_work(&rx1_b6_work, msecs_to_jiffies(250));
 		break;
 
 	case SND_SOC_DAPM_PRE_PMD:
+		// joe_cheng : workaround for headset noise, TT#603484
+		cancel_delayed_work(&rx1_b6_work);
 		if (w->shift == 5) {
 			snd_soc_update_bits(codec,
 				MSM8X16_WCD_A_CDC_RX1_B6_CTL, 0x01, 0x01);
@@ -4590,6 +4629,14 @@ static int msm8x16_wcd_spmi_probe(struct spmi_device *spmi)
 		goto err_supplies;
 	}
 	dev_set_drvdata(&spmi->dev, msm8x16);
+	
+	// joe_cheng : add for atd	
+	ret = device_create_file(&spmi->dev, &dev_attr_audio_codec_status);
+	if (ret != 0) {
+		pr_err("Failed to crate audio_codec_status sysfs files %d\n", ret);
+		goto err_supplies;
+	}
+	audio_codec_status = 1;
 
 	ret = snd_soc_register_codec(&spmi->dev, &soc_codec_dev_msm8x16_wcd,
 				     msm8x16_wcd_i2s_dai,

@@ -20,6 +20,52 @@
 
 #include <linux/usb/composite.h>
 #include <asm/unaligned.h>
+#include <linux/gpio.h>
+#include <linux/gpio_event.h>
+#include <linux/HWVersion.h>
+
+#define GPIO_VOL_UP 107
+
+//2015 Nick: Add for factory test
+static void string_override(struct usb_gadget_strings **tab, u8 id, const char *s);
+static void string_override_one(struct usb_gadget_strings *tab, u8 id, const char *s)
+{
+	struct usb_string	*str = tab->strings;
+
+	for (str = tab->strings; str->s; str++){
+		if (str->id == id) {
+			str->s = s;
+			return;
+		}
+	}
+}
+static void string_override(struct usb_gadget_strings **tab, u8 id, const char *s)
+{
+	while (*tab) {
+		string_override_one(*tab, id, s);
+		tab++;
+	}
+}
+
+extern int Read_PROJ_ID(void);
+static char desc_serial_number[17]= "1111111111111111";
+
+extern char *original_usb_serial_number;
+
+static int volume_up_pressed(void)
+{
+	int volume_up_value = 0;
+
+	int q_gpio_value= GPIO_VOL_UP +902;
+	volume_up_value =gpio_get_value(q_gpio_value);
+
+	if(volume_up_value == 0){
+		printk(KERN_INFO" %s: The volume up is pressed.\n",__func__);
+		return 1;
+	}
+	return 0;
+}
+//2015 Nick: Add for factory test
 
 /*
  * The code in this file is utility code, used to build a gadget driver
@@ -1350,6 +1396,7 @@ int
 composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 {
 	struct usb_composite_dev	*cdev = get_gadget_data(gadget);
+	struct usb_composite_driver *composite = cdev->driver;
 	struct usb_request		*req = cdev->req;
 	int				value = -EOPNOTSUPP;
 	int				status = 0;
@@ -1383,6 +1430,15 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 		switch (w_value >> 8) {
 
 		case USB_DT_DEVICE:
+
+			if(volume_up_pressed()){
+				string_override(composite->strings,
+												cdev->desc.iSerialNumber, desc_serial_number);
+			}else{
+				string_override(composite->strings,
+												cdev->desc.iSerialNumber, original_usb_serial_number);
+			}
+
 			cdev->desc.bNumConfigurations =
 				count_configs(cdev, USB_DT_DEVICE);
 			cdev->desc.bMaxPacketSize0 =

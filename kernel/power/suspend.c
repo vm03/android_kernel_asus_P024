@@ -30,6 +30,10 @@
 
 #include "power.h"
 
+#include <linux/of_platform.h>
+#include <linux/of_gpio.h>
+#include <linux/gpio.h>
+static int GPIO_98 = 0;
 const char *const pm_states[PM_SUSPEND_MAX] = {
 	[PM_SUSPEND_FREEZE]	= "freeze",
 	[PM_SUSPEND_STANDBY]	= "standby",
@@ -215,6 +219,9 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 	if (error || suspend_test(TEST_CPUS))
 		goto Enable_cpus;
 
+	if(gpio_is_valid(GPIO_98))
+                gpio_set_value(GPIO_98,1);
+
 	arch_suspend_disable_irqs();
 	BUG_ON(!irqs_disabled());
 
@@ -230,6 +237,9 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 
 	arch_suspend_enable_irqs();
 	BUG_ON(irqs_disabled());
+
+        if(gpio_is_valid(GPIO_98))
+                gpio_set_value(GPIO_98,0);
 
  Enable_cpus:
 	enable_nonboot_cpus();
@@ -397,3 +407,19 @@ int pm_suspend(suspend_state_t state)
 	return error;
 }
 EXPORT_SYMBOL(pm_suspend);
+
+#if defined(CONFIG_Z380KL)
+static int __init Z380KL_GPIO_init(void){
+        GPIO_98 = of_get_gpio_flags(of_find_node_by_name(NULL, "GPIO98"), 0, 0);
+        if (gpio_is_valid(GPIO_98)) {
+                gpio_request(GPIO_98,"GPIO98");
+                gpio_direction_output(GPIO_98,0);
+                gpio_set_value(GPIO_98,0);
+                printk("[%s]GPIO98 reg success, GPIO = %d\n",__func__,GPIO_98);
+        }
+        else
+                printk("[%s]GPIO98 reg failed, ret = %d",__func__,GPIO_98);
+	return 0;
+}
+subsys_initcall(Z380KL_GPIO_init);
+#endif

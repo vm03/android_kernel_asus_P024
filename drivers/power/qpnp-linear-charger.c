@@ -24,6 +24,12 @@
 #include <linux/alarmtimer.h>
 #include <linux/bitops.h>
 #include <linux/leds.h>
+#include <linux/delay.h>
+#include "battery/smb345_external_include.h"
+extern bool COVER_ATTACHED_UPI(void);
+extern bool VBUS_IN(void);
+extern bool IS_CB81(void);
+static int global_soc;
 
 #define CREATE_MASK(NUM_BITS, POS) \
 	((unsigned char) (((1 << (NUM_BITS)) - 1) << (POS)))
@@ -1148,7 +1154,7 @@ static int get_prop_charge_type(struct qpnp_lbc_chip *chip)
 
 static int get_prop_batt_status(struct qpnp_lbc_chip *chip)
 {
-	int rc;
+	/*int rc;
 	u8 reg_val;
 
 	if (qpnp_lbc_is_usb_chg_plugged_in(chip) && chip->chg_done)
@@ -1164,7 +1170,25 @@ static int get_prop_batt_status(struct qpnp_lbc_chip *chip)
 	if (reg_val & FAST_CHG_ON_IRQ)
 		return POWER_SUPPLY_STATUS_CHARGING;
 
-	return POWER_SUPPLY_STATUS_DISCHARGING;
+	return POWER_SUPPLY_STATUS_DISCHARGING;*/
+	int charger_status;
+	msleep(250);
+	charger_status = smb345_get_charging_status();
+
+	if (IS_CB81() && !VBUS_IN()) {
+		return charger_status;
+	}
+	else {
+		if (VBUS_IN() && ((charger_status == POWER_SUPPLY_STATUS_CHARGING) || (charger_status == POWER_SUPPLY_STATUS_FULL))) {
+			/* report CHARGING if charger IC is in charging state */
+			if (charger_status != POWER_SUPPLY_STATUS_FULL)
+				charger_status = POWER_SUPPLY_STATUS_CHARGING;
+			/* report FULL if soc is 100 (overwrite Charger IC state) */
+			if (global_soc == 100)
+				charger_status = POWER_SUPPLY_STATUS_FULL;
+		}
+	}
+	return charger_status;
 }
 
 static int get_prop_current_now(struct qpnp_lbc_chip *chip)
@@ -1187,6 +1211,7 @@ static int get_prop_capacity(struct qpnp_lbc_chip *chip)
 {
 	union power_supply_propval ret = {0,};
 	int soc, battery_status, charger_in;
+	static int old_soc;
 
 	if (chip->fake_battery_soc >= 0)
 		return chip->fake_battery_soc;
@@ -1224,6 +1249,22 @@ static int get_prop_capacity(struct qpnp_lbc_chip *chip)
 		mutex_unlock(&chip->chg_enable_lock);
 
 		soc = ret.intval;
+
+		if (battery_status == POWER_SUPPLY_STATUS_FULL) {
+			/* force report 100% if Charger IC report CHARING FULL */
+			if (old_soc == 99 || old_soc == 98) {
+				pr_info("<BATT> %s: old_soc:%d, soc:%d\n", __func__, old_soc, soc);
+				soc = 100;
+			}
+			/* force shift to 100% if Charger IC report CHARING FULL (but soc drop from 100 to 99) */
+			if (old_soc == 100 && soc == 99) {
+				pr_info("<BATT> %s: old_soc:%d, soc:%d\n", __func__, old_soc, soc);
+				soc = 100;
+			}
+		}
+		old_soc = soc;
+		global_soc = soc;
+
 		if (soc == 0) {
 			if (!qpnp_lbc_is_usb_chg_plugged_in(chip))
 				pr_warn_ratelimited("Batt 0, CHG absent\n");
@@ -2081,7 +2122,9 @@ static irqreturn_t qpnp_lbc_usbin_valid_irq_handler(int irq, void *_chip)
 		}
 
 		pr_debug("Updating usb_psy PRESENT property\n");
+#if !defined(CONFIG_Z380KL)
 		power_supply_set_present(chip->usb_psy, chip->usb_present);
+#endif
 	}
 
 	return IRQ_HANDLED;
@@ -2422,6 +2465,7 @@ static int qpnp_lbc_get_irqs(struct qpnp_lbc_chip *chip, u8 subtype,
 static void determine_initial_status(struct qpnp_lbc_chip *chip)
 {
 	chip->usb_present = qpnp_lbc_is_usb_chg_plugged_in(chip);
+#if !defined(CONFIG_Z380KL)
 	power_supply_set_present(chip->usb_psy, chip->usb_present);
 	/*
 	 * Set USB psy online to avoid userspace from shutting down if battery
@@ -2429,6 +2473,7 @@ static void determine_initial_status(struct qpnp_lbc_chip *chip)
 	 */
 	if (chip->usb_present)
 		power_supply_set_online(chip->usb_psy, 1);
+#endif
 }
 
 #define IBAT_TRIM			-300
