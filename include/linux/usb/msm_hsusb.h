@@ -324,6 +324,7 @@ struct msm_otg_platform_data {
     int usb_dpn_sel_gpio;
     int usb_cover_id_gpio;
     int usb_cover_id_np_gpio;
+	struct clk *system_clk;
 };
 
 /* phy related flags */
@@ -589,6 +590,7 @@ struct ci13xxx_platform_data {
 	void *prv_data;
 	bool l1_supported;
 	bool enable_ahb2ahb_bypass;
+	struct clk *system_clk;
 };
 
 /**

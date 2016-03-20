@@ -478,6 +478,7 @@ static void updateBack(enum back_types btype){
 	}
 	printk("Now Multitype back is %s\n",getBackString[btype]);
 }
+#define USB_DEFAULT_SYSTEM_CLOCK 80000000	/* 80 MHz */
 
 enum msm_otg_phy_reg_mode {
 	USB_PHY_REG_OFF,
@@ -5341,6 +5342,7 @@ static struct platform_device *msm_otg_add_pdev(
 		ci_pdata.l1_supported = otg_pdata->l1_supported;
 		ci_pdata.enable_ahb2ahb_bypass =
 				otg_pdata->enable_ahb2ahb_bypass;
+		ci_pdata.system_clk = otg_pdata->system_clk;
 		retval = platform_device_add_data(pdev, &ci_pdata,
 			sizeof(ci_pdata));
 		if (retval)
@@ -5806,7 +5808,8 @@ static int msm_otg_probe(struct platform_device *pdev)
 	 * Get Max supported clk frequency for USB Core CLK and request
 	 * to set the same.
 	 */
-	motg->core_clk_rate = clk_round_rate(motg->core_clk, LONG_MAX);
+	motg->core_clk_rate = clk_round_rate(motg->core_clk,
+		USB_DEFAULT_SYSTEM_CLOCK);
 	if (IS_ERR_VALUE(motg->core_clk_rate)) {
 		dev_err(&pdev->dev, "fail to get core clk max freq.\n");
 	} else {
@@ -5949,6 +5952,8 @@ static int msm_otg_probe(struct platform_device *pdev)
 			msm_otg_bus_vote(motg, USB_MIN_PERF_VOTE);
 		}
 	}
+
+	pdata->system_clk = motg->core_clk;
 
 	ret = msm_otg_bus_freq_get(motg->phy.dev, motg);
 	if (ret)

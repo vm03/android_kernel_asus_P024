@@ -505,7 +505,6 @@ static struct kgsl_memdesc_ops kgsl_cma_ops = {
 	.vmfault = kgsl_contiguous_vmfault,
 };
 
-//ASUS_BSP+++ DIT's patch to fix OpenGL issue
 #ifdef CONFIG_ARM64
 /*
  * For security reasons, ARMv8 doesn't allow invalidate only on read-only
@@ -526,7 +525,6 @@ static inline unsigned int _fixup_cache_range_op(unsigned int op)
 	return op;
 }
 #endif
-//ASUS_BSP--- DIT's patch to fix OpenGL issue
 
 int kgsl_cache_range_op(struct kgsl_memdesc *memdesc, size_t offset,
 			size_t size, unsigned int op)
@@ -558,7 +556,7 @@ int kgsl_cache_range_op(struct kgsl_memdesc *memdesc, size_t offset,
 	 * are not aligned to the cacheline size correctly.
 	 */
 
-	switch (_fixup_cache_range_op(op)) {  //ASUS_BSP+++
+	switch (_fixup_cache_range_op(op)) {
 	case KGSL_CACHE_OP_FLUSH:
 		dmac_flush_range(addr, addr + size);
 		break;
