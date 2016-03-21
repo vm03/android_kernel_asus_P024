@@ -652,3 +652,7 @@ endif
 source "lib/Kconfig"
 
 source "arch/arm64/mm/Kconfig"
+
+config Z380KL
+       bool "ASUS Z380KL Product"
+       depends on ARM64
