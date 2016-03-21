@@ -90,6 +90,9 @@ enum dsi_panel_bl_ctrl {
 	BL_PWM,
 	BL_WLED,
 	BL_DCS_CMD,
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+	BL_CADIZ,
+#endif
 	UNKNOWN_CTRL,
 };
 
@@ -191,6 +194,7 @@ enum dsi_pm_type {
 extern struct device dsi_dev;
 extern u32 dsi_irq;
 extern struct mdss_dsi_ctrl_pdata *ctrl_list[];
+extern int lcm_id2;
 
 struct dsiphy_pll_divider_config {
 	u32 clk_rate;

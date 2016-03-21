@@ -2928,11 +2928,11 @@ static ssize_t printk_state_write_proc(struct file *filp, const char __user *buf
 
 static ssize_t printk_state_read_proc (struct file *file, char __user *page, size_t size, loff_t *ppos)
 {
-        int len;
+/*        int len;
 
         printk(KERN_INFO "%s-- %s \n",__FILE__,__func__);
         printk(KERN_ERR "Flysky: %s\n",__func__);
-        printk(KERN_ERR "log_buf=%p,__pa=%lx\n",log_buf,__pa(log_buf));
+        printk(KERN_ERR "log_buf=%p,__pa=%lx\n",(long unsigned int) log_buf,__pa(log_buf));
         printk(KERN_ERR "&log_first_idx=%p,__pa=%lx,value=%x\n",&log_first_idx,__pa(&log_first_idx),log_first_idx);
         printk(KERN_ERR "&console_idx=%p,__pa=%lx,value=%x\n",&console_idx,__pa(&console_idx),console_idx);
         printk(KERN_ERR "&log_next_idx=%p,__pa=%lx,value=%x\n",&log_next_idx,__pa(&log_next_idx),log_next_idx);
@@ -2940,7 +2940,8 @@ static ssize_t printk_state_read_proc (struct file *file, char __user *page, siz
 
         len = sprintf(page, "%lx %lx %lx\n",__pa(log_buf),__pa(log_buf),__pa(log_buf + log_buf_len));
 
-        return len;
+        return len;*/
+	return 0;
 }
 
 static const struct file_operations proc_printk_struct =

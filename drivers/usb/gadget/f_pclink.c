@@ -427,7 +427,7 @@ static ssize_t conn_gadget_read(struct file *fp, char __user *buf,
 	int ret;
 	int lock = 0;
 
-	pr_debug("conn_gadget_read(%d)\n", count);
+//	pr_debug("conn_gadget_read(%d)\n", count);
 
 	if (!_conn_gadget_dev) {
 		printk(KERN_ERR "%s: _conn_gadget_dev is NULL\n", __func__);
@@ -435,7 +435,7 @@ static ssize_t conn_gadget_read(struct file *fp, char __user *buf,
 	}
 
 	if (count > CONN_GADGET_BULK_BUFFER_SIZE) {
-		printk(KERN_ERR "%s: count %d > BLK_BUF_SIZ %d\n", __func__, count, CONN_GADGET_BULK_BUFFER_SIZE);
+//		printk(KERN_ERR "%s: count %d > BLK_BUF_SIZ %d\n", __func__, count, CONN_GADGET_BULK_BUFFER_SIZE);
 		return -EINVAL;
 	}
 
@@ -525,7 +525,7 @@ static ssize_t conn_gadget_write(struct file *fp, const char __user *buf,
 		return -ENODEV;
 	}
 
-	pr_debug("conn_gadget_write(%d)\n", count);
+//	pr_debug("conn_gadget_write(%d)\n", count);
 
 	if (conn_gadget_lock(&dev->write_excl)) {
 		printk(KERN_INFO "%s: lock write_excl failed\n", __func__);
@@ -535,7 +535,7 @@ static ssize_t conn_gadget_write(struct file *fp, const char __user *buf,
 	dev->tx_done = 0;
 
 	while (count > 0) {
-		pr_debug("%s: in the loop (user count %d)\n", __func__, count);
+//		pr_debug("%s: in the loop (user count %d)\n", __func__, count);
 
 		if (dev->error) {
 			r = -EIO;
@@ -571,7 +571,7 @@ static ssize_t conn_gadget_write(struct file *fp, const char __user *buf,
 			ret = usb_ep_queue(dev->ep_in, req, GFP_ATOMIC);
 			if (ret < 0) {
 				dev->error = 1;
-				pr_debug("%s: error %d\n", __func__, dev->error);
+//				pr_debug("%s: error %d\n", __func__, dev->error);
 				r = -EIO;
 				printk(KERN_ERR "%s: xfer error %d\n", __func__, ret);
 				break;
@@ -591,7 +591,7 @@ static ssize_t conn_gadget_write(struct file *fp, const char __user *buf,
 	}
 
 	conn_gadget_unlock(&dev->write_excl);
-	pr_debug("conn_gadget_write ret %d\n", r);
+//	pr_debug("conn_gadget_write ret %d\n", r);
 
 	dev->tx_done = 1;
 

@@ -530,7 +530,7 @@ static ssize_t set_isn_info(struct device *dev, struct device_attribute *attr,
     if (!COVER_ATTACHED_UPI())
         return count;
 
-    pr_info("buf size: %d, count: %d\n", sizeof(buf), count);
+//    pr_info("buf size: %d, count: %d\n", sizeof(buf), count);
     for (reg = ISN_START_REG; reg < NUM_BYTE_ISN; reg++) {
         ret = ht24lc02au_write(ht24, reg, *(buf + reg));
     }
@@ -566,7 +566,7 @@ static ssize_t set_ssn_info(struct device *dev, struct device_attribute *attr,
     if (!COVER_ATTACHED_UPI())
         return count;
 
-    pr_info("count: %d\n", count);
+//    pr_info("count: %d\n", count);
     for (reg = SSN_START_REG; reg < (SSN_START_REG + NUM_BYTE_SSN); reg++) {
         ret = ht24lc02au_write(ht24, reg, *(buf + (reg - SSN_START_REG)));
     }
@@ -602,7 +602,7 @@ static ssize_t set_model_name(struct device *dev, struct device_attribute *attr,
     if (!COVER_ATTACHED_UPI())
         return count;
 
-    pr_info("count: %d\n", count);
+//    pr_info("count: %d\n", count);
     for (reg = MOD_START_REG; reg < (MOD_START_REG + NUM_BYTE_MOD); reg++) {
         ret = ht24lc02au_write(ht24, reg, *(buf + (reg - MOD_START_REG)));
     }
@@ -638,7 +638,7 @@ static ssize_t set_cover_type(struct device *dev, struct device_attribute *attr,
     if (!COVER_ATTACHED_UPI())
         return count;
 
-    pr_info("count: %d\n", count);
+//    pr_info("count: %d\n", count);
     for (reg = COV_START_REG; reg < (COV_START_REG + NUM_BYTE_COV); reg++) {
         ret = ht24lc02au_write(ht24, reg, *(buf + (reg - COV_START_REG)));
     }
@@ -674,7 +674,7 @@ static ssize_t set_activ_flag(struct device *dev, struct device_attribute *attr,
     if (!COVER_ATTACHED_UPI())
         return count;
 
-    pr_info("count: %d\n", count);
+//    pr_info("count: %d\n", count);
     for (reg = ACT_START_REG; reg < (ACT_START_REG + NUM_BYTE_ACT); reg++) {
         ret = ht24lc02au_write(ht24, reg, *(buf + (reg - ACT_START_REG)));
     }
@@ -710,7 +710,7 @@ static ssize_t set_tin_plate(struct device *dev, struct device_attribute *attr,
     if (!COVER_ATTACHED_UPI())
         return count;
 
-    pr_info("count: %d\n", count);
+//    pr_info("count: %d\n", count);
     for (reg = TIN_START_REG; reg < (TIN_START_REG + NUM_BYTE_TIN); reg++) {
         ret = ht24lc02au_write(ht24, reg, *(buf + (reg - TIN_START_REG)));
     }
