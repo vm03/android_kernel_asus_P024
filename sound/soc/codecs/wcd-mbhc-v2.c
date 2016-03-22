@@ -37,6 +37,9 @@
 #include "msm8916-wcd-irq.h"
 #include "msm8x16-wcd.h"
 #include "wcdcal-hwdep.h"
+#include <linux/HWVersion.h>
+
+//#define DEBUG 1
 
 #define WCD_MBHC_JACK_MASK (SND_JACK_HEADSET | SND_JACK_OC_HPHL | \
 			   SND_JACK_OC_HPHR | SND_JACK_LINEOUT | \
@@ -45,7 +48,8 @@
 				  SND_JACK_BTN_2 | SND_JACK_BTN_3 | \
 				  SND_JACK_BTN_4)
 #define OCP_ATTEMPT 1
-#define HS_DETECT_PLUG_TIME_MS (3 * 1000)
+//#define HS_DETECT_PLUG_TIME_MS (3 * 1000)
+#define HS_DETECT_PLUG_TIME_MS 300
 #define SPECIAL_HS_DETECT_TIME_MS (2 * 1000)
 #define MBHC_BUTTON_PRESS_THRESHOLD_MIN 250
 #define GND_MIC_SWAP_THRESHOLD 4
@@ -77,6 +81,18 @@ MODULE_PARM_DESC(det_extn_cable_en, "enable/disable extn cable detect");
 	WARN_ONCE(!mutex_is_locked(&mbhc->codec_resource_lock), \
 		  "%s: BCL should have acquired\n", __func__); \
 }
+
+static int asus_headset_status = 0;
+static ssize_t asus_headset_status_show(struct device*, struct device_attribute*, char*);
+static ssize_t asus_headset_status_store(struct device *dev,
+        struct device_attribute *attr, const char *buf, size_t count);
+	
+static int asus_uart_gpio = -1;
+
+extern int Read_HW_ID(void);
+static int HW_ID;
+
+static int ignore_btn_press = 0;
 
 enum wcd_mbhc_cs_mb_en_flag {
 	WCD_MBHC_EN_CS = 0,
@@ -118,7 +134,21 @@ static void wcd_configure_cap(struct wcd_mbhc *mbhc, bool micbias2)
 static void wcd_mbhc_jack_report(struct wcd_mbhc *mbhc,
 				struct snd_soc_jack *jack, int status, int mask)
 {
+	struct snd_soc_codec *codec;
+	codec = mbhc->codec;
+	
+	if (gpio_get_value(asus_uart_gpio) == 0) {
+		printk("%s : Uart is inserted. Don't report headset status\n", __func__);
+		return;
+	}
+	
+	if (status == 1 || status == 3)
+		snd_soc_write(codec, MSM8X16_WCD_A_ANALOG_MBHC_DBNC_TIMER, 0x98);
+	else if (status == 0 && mask == 455)
+		snd_soc_write(codec, MSM8X16_WCD_A_ANALOG_MBHC_DBNC_TIMER, 0xc8);
+	
 	snd_soc_jack_report_no_dapm(jack, status, mask);
+	printk("%s : jack status %d mask %d\n", __func__, status, mask);
 }
 
 static void __hphocp_off_report(struct wcd_mbhc *mbhc, u32 jack_status,
@@ -204,7 +234,7 @@ static void wcd_program_btn_threshold(const struct wcd_mbhc *mbhc, bool micbias)
 
 		reg_val = (course << 5) | (fine << 2);
 		snd_soc_update_bits(codec, reg_addr, 0xFC, reg_val);
-		pr_err("%s: course: %d fine: %d reg_addr: %x reg_val: %x\n",
+		pr_debug("%s: course: %d fine: %d reg_addr: %x reg_val: %x\n",
 				__func__, course, fine, reg_addr, reg_val);
 		reg_addr++;
 	}
@@ -672,6 +702,18 @@ exit:
 	pr_debug("%s: Impedance detection completed\n", __func__);
 }
 
+int wcd_mbhc_get_impedance(struct wcd_mbhc *mbhc, uint32_t *zl,
+			uint32_t *zr)
+{
+	*zl = mbhc->zl;
+	*zr = mbhc->zr;
+
+	if (*zl && *zr)
+		return 0;
+	else
+		return -EINVAL;
+}
+
 static void wcd_mbhc_report_plug(struct wcd_mbhc *mbhc, int insertion,
 				enum snd_jack_types jack_type)
 {
@@ -776,6 +818,7 @@ static void wcd_mbhc_report_plug(struct wcd_mbhc *mbhc, int insertion,
 				    mbhc->hph_status, WCD_MBHC_JACK_MASK);
 		wcd_mbhc_clr_and_turnon_hph_padac(mbhc);
 	}
+	asus_headset_status = mbhc->hph_status;
 	pr_debug("%s: leave hph_status %x\n", __func__, mbhc->hph_status);
 }
 
@@ -799,6 +842,11 @@ static void wcd_mbhc_find_plug_and_report(struct wcd_mbhc *mbhc,
 				MSM8X16_WCD_A_ANALOG_MBHC_FSM_CTL, 0x30, 0x30);
 		wcd_mbhc_report_plug(mbhc, 1, SND_JACK_HEADPHONE);
 	} else if (plug_type == MBHC_PLUG_TYPE_GND_MIC_SWAP) {
+			if (mbhc->current_plug == MBHC_PLUG_TYPE_HEADPHONE)
+				wcd_mbhc_report_plug(mbhc, 0,
+						SND_JACK_HEADPHONE);
+			if (mbhc->current_plug == MBHC_PLUG_TYPE_HEADSET)
+				wcd_mbhc_report_plug(mbhc, 0, SND_JACK_HEADSET);
 		wcd_mbhc_report_plug(mbhc, 1, SND_JACK_UNSUPPORTED);
 	} else if (plug_type == MBHC_PLUG_TYPE_HEADSET) {
 		/*
@@ -843,10 +891,15 @@ static void wcd_mbhc_find_plug_and_report(struct wcd_mbhc *mbhc,
 /* To determine if cross connection occured */
 static bool wcd_check_cross_conn(struct wcd_mbhc *mbhc)
 {
-	u16 result1, swap_res;
+	u16 swap_res;
 	struct snd_soc_codec *codec = mbhc->codec;
 	enum wcd_mbhc_plug_type plug_type = mbhc->current_plug;
 	s16 reg1;
+
+	if (wcd_swch_level_remove(mbhc)) {
+		pr_debug("%s: Switch level is low\n", __func__);
+		return false;
+	}
 
 	reg1 = snd_soc_read(codec, MSM8X16_WCD_A_ANALOG_MBHC_DET_CTL_2);
 	/*
@@ -854,8 +907,6 @@ static bool wcd_check_cross_conn(struct wcd_mbhc *mbhc)
 	 * Micbias and schmitt trigger (HPHL-HPHR)
 	 * needs to be enabled.
 	 */
-	result1 = snd_soc_read(codec, MSM8X16_WCD_A_ANALOG_MBHC_BTN_RESULT);
-	/* Make sure micbias is enabled now */
 	wcd_enable_curr_micbias(mbhc, WCD_MBHC_EN_MB);
 	snd_soc_update_bits(codec,
 			MSM8X16_WCD_A_ANALOG_MBHC_DET_CTL_2,
@@ -864,7 +915,7 @@ static bool wcd_check_cross_conn(struct wcd_mbhc *mbhc)
 	swap_res = snd_soc_read(codec,
 			MSM8X16_WCD_A_ANALOG_MBHC_ZDET_ELECT_RESULT);
 	pr_debug("%s: swap_res %x\n", __func__, swap_res);
-	if (!result1 && !(swap_res & 0x0C)) {
+	if (!(swap_res & 0x0C)) {
 		plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
 		pr_debug("%s: Cross connection identified\n", __func__);
 	} else {
@@ -963,7 +1014,7 @@ static void wcd_correct_swch_plug(struct work_struct *work)
 			goto exit;
 		}
 		/* allow sometime and re-check stop requested again */
-		msleep(200);
+		msleep(50);
 		if (mbhc->hs_detect_work_stop) {
 			pr_debug("%s: stop requested: %d\n", __func__,
 					mbhc->hs_detect_work_stop);
@@ -982,6 +1033,7 @@ static void wcd_correct_swch_plug(struct work_struct *work)
 		if ((!(result2 & 0x01)) && (!is_pa_on)) {
 			/* Check for cross connection*/
 			if (wcd_check_cross_conn(mbhc)) {
+				plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
 				pt_gnd_mic_swap_cnt++;
 				if (pt_gnd_mic_swap_cnt <
 						GND_MIC_SWAP_THRESHOLD) {
@@ -994,7 +1046,6 @@ static void wcd_correct_swch_plug(struct work_struct *work)
 					 */
 					pr_debug("%s: switch didnt work\n",
 						  __func__);
-					plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
 					goto report;
 				} else if (mbhc->mbhc_cfg->swap_gnd_mic) {
 					pr_debug("%s: US_EU gpio present, flip switch\n",
@@ -1003,7 +1054,6 @@ static void wcd_correct_swch_plug(struct work_struct *work)
 					 * if switch is toggled, check again,
 					 * otherwise report unsupported plug
 					 */
-					plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
 					if (mbhc->mbhc_cfg->swap_gnd_mic(codec))
 						continue;
 				}
@@ -1365,28 +1415,32 @@ static irqreturn_t wcd_mbhc_mech_plug_detect_irq(int irq, void *data)
 
 static int wcd_mbhc_get_button_mask(u16 btn)
 {
-	int mask = 0;
-
-	switch (btn) {
-	case 0:
-		mask = SND_JACK_BTN_0;
-		break;
-	case 1:
-		mask = SND_JACK_BTN_1;
-		break;
-	case 3:
-		mask = SND_JACK_BTN_2;
-		break;
-	case 7:
-		mask = SND_JACK_BTN_3;
-		break;
-	case 15:
-		mask = SND_JACK_BTN_4;
-		break;
-	default:
-		break;
+	if (HW_ID == 0x7) {
+		int mask = 0;
+		switch (btn) {
+			case 0:
+				mask = SND_JACK_BTN_0;
+				break;
+			case 1:
+				mask = SND_JACK_BTN_1;
+				break;
+			case 3:
+				mask = SND_JACK_BTN_2;
+				break;
+			case 7:
+				mask = SND_JACK_BTN_3;
+				break;
+			case 15:
+				mask = SND_JACK_BTN_4;
+				break;
+			default:
+				break;
+		}
+		return mask;
+	} else {
+		return SND_JACK_BTN_0;
 	}
-	return mask;
+
 }
 
 static irqreturn_t wcd_mbhc_hs_ins_irq(int irq, void *data)
@@ -1635,6 +1689,7 @@ irqreturn_t wcd_mbhc_btn_press_handler(int irq, void *data)
 	pr_debug("%s: msec_val = %ld\n", __func__, msec_val);
 	if (msec_val < MBHC_BUTTON_PRESS_THRESHOLD_MIN) {
 		pr_debug("%s: Too short, ignore button press\n", __func__);
+		ignore_btn_press = 1;
 		goto done;
 	}
 
@@ -1642,6 +1697,7 @@ irqreturn_t wcd_mbhc_btn_press_handler(int irq, void *data)
 	if (mbhc->in_swch_irq_handler) {
 		pr_debug("%s: Swtich level changed, ignore button press\n",
 			 __func__);
+		ignore_btn_press = 1;
 		goto done;
 	}
 	if (mbhc->current_plug != MBHC_PLUG_TYPE_HEADSET) {
@@ -1650,10 +1706,12 @@ irqreturn_t wcd_mbhc_btn_press_handler(int irq, void *data)
 					__func__);
 			mbhc->btn_press_intr = false;
 			mbhc->is_btn_press = false;
+			ignore_btn_press = 1;
 			goto done;
 		}
 		pr_debug("%s: Plug isn't headset, ignore button press\n",
 				__func__);
+		ignore_btn_press = 1;
 		goto done;
 	}
 	result1 = snd_soc_read(codec, MSM8X16_WCD_A_ANALOG_MBHC_BTN_RESULT);
@@ -1661,7 +1719,7 @@ irqreturn_t wcd_mbhc_btn_press_handler(int irq, void *data)
 	mbhc->buttons_pressed |= mask;
 	wcd9xxx_spmi_lock_sleep();
 	if (schedule_delayed_work(&mbhc->mbhc_btn_dwork,
-				msecs_to_jiffies(400)) == 0) {
+				msecs_to_jiffies(800)) == 0) {
 		WARN(1, "Button pressed twice without release event\n");
 		wcd9xxx_spmi_unlock_sleep();
 	}
@@ -1687,6 +1745,12 @@ static irqreturn_t wcd_mbhc_release_handler(int irq, void *data)
 		mbhc->btn_press_intr = false;
 	} else {
 		pr_debug("%s: This release is for fake btn press\n", __func__);
+		goto exit;
+	}
+
+	if (ignore_btn_press == 1) {
+		ignore_btn_press = 0;
+		pr_debug("%s : ignore button press\n", __func__);
 		goto exit;
 	}
 
@@ -1801,14 +1865,17 @@ static int wcd_mbhc_initialise(struct wcd_mbhc *mbhc)
 			0x80, 0x80);
 	snd_soc_write(codec, MSM8X16_WCD_A_ANALOG_MBHC_DET_CTL_1, 0xB5);
 	/* enable HS detection */
-	snd_soc_write(codec, MSM8X16_WCD_A_ANALOG_MBHC_DET_CTL_2, 0xE8);
-	snd_soc_update_bits(codec, MSM8X16_WCD_A_ANALOG_MBHC_DET_CTL_2, 0x18,
-				(mbhc->hphl_swh << 4 | mbhc->gnd_swh << 3));
+	// joe_cheng : change to NO type
+	snd_soc_write(codec, MSM8X16_WCD_A_ANALOG_MBHC_DET_CTL_2, 0xF8);
+//	snd_soc_update_bits(codec, MSM8X16_WCD_A_ANALOG_MBHC_DET_CTL_2, 0x18,
+//				(mbhc->hphl_swh << 4 | mbhc->gnd_swh << 3));
+	pr_debug("%s: MSM8X16_WCD_A_ANALOG_MBHC_DET_CTL_2 %x\n", 
+		__func__, snd_soc_read(codec, MSM8X16_WCD_A_ANALOG_MBHC_DET_CTL_2));
 
 	snd_soc_update_bits(codec, MSM8X16_WCD_A_ANALOG_MBHC_DET_CTL_2,
 			0x01, 0x01);
 
-	snd_soc_write(codec, MSM8X16_WCD_A_ANALOG_MBHC_DBNC_TIMER, 0x98);
+	snd_soc_write(codec, MSM8X16_WCD_A_ANALOG_MBHC_DBNC_TIMER, 0xc8);
 
 	/* enable MBHC clock */
 	snd_soc_update_bits(codec,
@@ -1956,6 +2023,21 @@ void wcd_mbhc_stop(struct wcd_mbhc *mbhc)
 }
 EXPORT_SYMBOL(wcd_mbhc_stop);
 
+static ssize_t asus_headset_status_show(struct device* dev, struct device_attribute * attr, char* buf)
+{
+	if (asus_headset_status == 3) return sprintf(buf, "1\n"); // headset
+	else if(asus_headset_status == 1) return sprintf(buf, "2\n"); // headphone
+	else return sprintf(buf, "0\n"); // nothing
+}
+
+static ssize_t asus_headset_status_store(struct device *dev,
+        struct device_attribute *attr, const char *buf, size_t count)
+{
+	return 0;
+}
+
+static DEVICE_ATTR(asus_headset_status, S_IRUGO, asus_headset_status_show, asus_headset_status_store);
+
 /*
  * wcd_mbhc_init : initialize MBHC internal structures.
  *
@@ -1974,8 +2056,11 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_codec *codec,
 	const char *gnd_switch = "qcom,msm-mbhc-gnd-swh";
 	const char *ext1_cap = "qcom,msm-micbias1-ext-cap";
 	const char *ext2_cap = "qcom,msm-micbias2-ext-cap";
+	const char *asus_uart = "qcom,uart-debug-gpio";
 
 	pr_debug("%s: enter\n", __func__);
+
+	HW_ID = Read_HW_ID();
 
 	ret = of_property_read_u32(card->dev->of_node, hph_switch, &hph_swh);
 	if (ret) {
@@ -2032,9 +2117,25 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_codec *codec,
 			return ret;
 		}
 
-		ret = snd_jack_set_key(mbhc->button_jack.jack,
-				       SND_JACK_BTN_0,
-				       KEY_MEDIA);
+		if (HW_ID == 0x7) {
+			ret = snd_jack_set_key(mbhc->button_jack.jack,
+					SND_JACK_BTN_0,
+					KEY_MEDIA);
+			ret = snd_jack_set_key(mbhc->button_jack.jack,
+					SND_JACK_BTN_3,
+					KEY_VOLUMEDOWN);
+			ret = snd_jack_set_key(mbhc->button_jack.jack,
+					SND_JACK_BTN_2,
+					KEY_VOLUMEUP);
+			ret = snd_jack_set_key(mbhc->button_jack.jack,
+					SND_JACK_BTN_1,
+					582);
+		} else {
+			ret = snd_jack_set_key(mbhc->button_jack.jack,
+					SND_JACK_BTN_0,
+					KEY_MEDIA);
+		}
+		
 		if (ret) {
 			pr_err("%s: Failed to set code for btn-0\n",
 				__func__);
@@ -2122,6 +2223,22 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_codec *codec,
 		       mbhc->intr_ids->hph_right_ocp);
 		goto err_hphr_ocp_irq;
 	}
+
+	ret = device_create_file(codec->dev, &dev_attr_asus_headset_status);
+	if (ret != 0) {
+		pr_err("Failed to crate asus_headset_status sysfs files %d\n", ret);
+		return ret;
+	}
+
+	asus_uart_gpio = of_get_named_gpio(card->dev->of_node, asus_uart, 0);
+	if (asus_uart_gpio < 0) {
+		dev_err(card->dev,
+			"%s: missing %s in dt node\n", __func__, asus_uart);
+		goto err;
+	}
+	ret = gpio_request(asus_uart_gpio, "uart status");
+	if (ret < 0)
+		printk("%s : Request uart gpio %d failed\n", __func__, asus_uart_gpio);
 
 	pr_debug("%s: leave ret %d\n", __func__, ret);
 	return ret;

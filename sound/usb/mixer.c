@@ -1313,6 +1313,25 @@ static void build_feature_ctl(struct mixer_build *state, void *raw_desc,
 	snd_printdd(KERN_INFO "[%d] FU [%s] ch = %d, val = %d/%d/%d\n",
 		    cval->id, kctl->id.name, cval->channels, cval->min, cval->max, cval->res);
 	snd_usb_mixer_add_control(state->mixer, kctl);
+
+	if (cval->mixer->chip->usb_id == USB_ID(0x0d8c, 0x0102)) {
+		pr_debug("%s : Update cmedia speaker playback volume\n", __func__);
+		if (strcmp(kctl->id.name, "Speaker Playback Volume") == 0) {
+			// joe_cheng : effect off 70, 70, 100, 100, 70, 70, 70, 70
+			//int s_volume[] = {-6096, -6096, -4656, -4656, -6096, -6096, -6096, -6096, -6096}; 
+			// joe_cheng : effect on 120, 120, 100, 100, 120, 120, 120, 120
+			//int s_volume[] = {-3696, -3696, -4656, -4656, -3696, -3696, -3696, -3696, -3696};
+			// joe_cheng : 170, 170, 180, 190, 170, 170, 170, 170
+			//int s_volume[] = {-1296, -1296, -816, -336, -1296, -1296, -1296, -1296}; 
+			// joe_cheng : 130, 130, 130, 110, 130, 130, 130, 130
+			int s_volume[] = {-3216, -3216, -3216, -4176, -3216, -3216, -3216, -3216}; 
+			int s_i = 1;
+			while (s_i < 9 ){
+				set_cur_mix_value(cval, s_i, s_i-1, s_volume[s_i-1]);
+				s_i++;
+			}
+		}
+	}
 }
 
 

@@ -259,7 +259,7 @@ static inline dev_t part_devt(struct hd_struct *part)
 {
 	return part_to_dev(part)->devt;
 }
-
+extern int disk_is_media_present(struct gendisk *disk);
 extern struct hd_struct *disk_get_part(struct gendisk *disk, int partno);
 
 static inline void disk_put_part(struct hd_struct *part)

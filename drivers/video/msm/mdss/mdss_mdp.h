@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -39,7 +39,7 @@
 #define MAX_IMG_HEIGHT		0x3FFF
 #define AHB_CLK_OFFSET		0x2B4
 #define MAX_DST_H		MAX_MIXER_HEIGHT
-#define MAX_DOWNSCALE_RATIO	4
+#define MAX_DOWNSCALE_RATIO	3
 #define MAX_UPSCALE_RATIO	20
 #define MAX_DECIMATION		4
 #define HORSCALER_NUM_FILTER_TAPS	8
@@ -220,6 +220,7 @@ struct mdss_mdp_ctl {
 	struct mdss_mdp_mixer *mixer_left;
 	struct mdss_mdp_mixer *mixer_right;
 	struct mutex lock;
+	struct mutex offlock;
 	struct mutex *shared_lock;
 	spinlock_t spin_lock;
 
@@ -253,7 +254,7 @@ struct mdss_mdp_ctl {
 
 	void *priv_data;
 	u32 wb_type;
-	bool prg_fet;
+	u32 prg_fet;
 };
 
 struct mdss_mdp_mixer {

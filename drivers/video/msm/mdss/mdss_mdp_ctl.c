@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -687,6 +687,10 @@ static void mdss_mdp_perf_calc_mixer(struct mdss_mdp_mixer *mixer,
 		if (!pinfo)	/* perf for bus writeback */
 			perf->bw_overlap =
 				fps * mixer->width * mixer->height * 3;
+		/* for command mode, run as fast as the link allows us */
+		else if ((pinfo->type == MIPI_CMD_PANEL) &&
+			 (pinfo->mipi.dsi_pclk_rate > perf->mdp_clk_rate))
+			perf->mdp_clk_rate = pinfo->mipi.dsi_pclk_rate;
 	}
 
 	/*
@@ -815,8 +819,7 @@ static u32 mdss_mdp_get_vbp_factor(struct mdss_mdp_ctl *ctl)
 	fps = mdss_panel_get_framerate(pinfo);
 	v_total = mdss_panel_get_vtotal(pinfo);
 	vbp = pinfo->lcdc.v_back_porch + pinfo->lcdc.v_pulse_width;
-	if (ctl->prg_fet)
-		vbp += mdss_mdp_max_fetch_lines(pinfo);
+	vbp += ctl->prg_fet;
 
 	vbp_fac = (vbp) ? fps * v_total / vbp : 0;
 	pr_debug("vbp_fac=%d vbp=%d v_total=%d\n", vbp_fac, vbp, v_total);
@@ -1439,6 +1442,7 @@ static struct mdss_mdp_ctl *mdss_mdp_ctl_alloc(struct mdss_data_type *mdata,
 			ctl->ref_cnt++;
 			ctl->mdata = mdata;
 			mutex_init(&ctl->lock);
+			mutex_init(&ctl->offlock);
 			spin_lock_init(&ctl->spin_lock);
 			BLOCKING_INIT_NOTIFIER_HEAD(&ctl->notifier_head);
 			pr_debug("alloc ctl_num=%d\n", ctl->num);

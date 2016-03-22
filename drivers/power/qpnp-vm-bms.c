@@ -37,12 +37,15 @@
 #include <linux/batterydata-interface.h>
 #include <linux/qpnp-revid.h>
 #include <uapi/linux/vm_bms.h>
+#include "battery/smb345_external_include.h"
 
 #define _BMS_MASK(BITS, POS) \
 	((unsigned char)(((1 << (BITS)) - 1) << (POS)))
 #define BMS_MASK(LEFT_BIT_POS, RIGHT_BIT_POS) \
 		_BMS_MASK((LEFT_BIT_POS) - (RIGHT_BIT_POS) + 1, \
 					(RIGHT_BIT_POS))
+#define BATTERY_TAG "<BATT>"
+#define BAT_DBG(...)  printk(KERN_INFO BATTERY_TAG __VA_ARGS__)
 
 /* Config / Data registers */
 #define REVISION1_REG			0x0
@@ -272,7 +275,10 @@ struct qpnp_bms_chip {
 	struct power_supply		*batt_psy;
 	struct power_supply		*usb_psy;
 };
-
+extern int entry_mode;
+struct wake_lock wakelock_ac;
+static int64_t battery_id;
+static int cell_type = 1;
 static struct qpnp_bms_chip *the_chip;
 
 static struct temp_curr_comp_map temp_curr_comp_lut[] = {
@@ -286,6 +292,14 @@ static void disable_bms_irq(struct bms_irq *irq)
 	if (!__test_and_set_bit(0, &irq->disabled)) {
 		disable_irq(irq->irq);
 		pr_debug("disabled irq %d\n", irq->irq);
+	}
+}
+
+static void enable_bms_irq(struct bms_irq *irq)
+{
+	if (__test_and_clear_bit(0, &irq->disabled)) {
+		enable_irq(irq->irq);
+		pr_debug("enable irq %d\n", irq->irq);
 	}
 }
 
@@ -389,6 +403,46 @@ static int qpnp_secure_write_wrapper(struct qpnp_bms_chip *chip, u8 *val,
 	return rc;
 }
 
+static inline struct power_supply *get_psy_ac(void)
+{
+        struct class_dev_iter iter;
+        struct device *dev;
+        static struct power_supply *psy;
+
+        class_dev_iter_init(&iter, power_supply_class, NULL, NULL);
+        while ((dev = class_dev_iter_next(&iter))) {
+                psy = (struct power_supply *)dev_get_drvdata(dev);
+                if (psy->type == POWER_SUPPLY_TYPE_MAINS) {
+                class_dev_iter_exit(&iter);
+                return psy;
+                }
+        }
+        class_dev_iter_exit(&iter);
+
+        return NULL;
+}
+
+static inline bool is_charging_toggle_online(void)
+{
+	struct power_supply *psy_ac;
+	union power_supply_propval val;
+	int ret;
+	bool ac;
+
+	psy_ac = get_psy_ac();
+	if (!psy_ac)
+		return -EINVAL;
+
+	ret = psy_ac->get_property(psy_ac, POWER_SUPPLY_PROP_ONLINE, &val);
+	if (!ret)
+		ac = val.intval;
+
+	if(ac)
+		return true;
+	else
+		return false;
+}
+
 static int backup_ocv_soc(struct qpnp_bms_chip *chip, int ocv_uv, int soc)
 {
 	int rc;
@@ -478,6 +532,7 @@ static bool is_charger_present(struct qpnp_bms_chip *chip)
 
 static bool is_battery_charging(struct qpnp_bms_chip *chip)
 {
+#if 0
 	union power_supply_propval ret = {0,};
 
 	if (chip->batt_psy == NULL)
@@ -488,7 +543,15 @@ static bool is_battery_charging(struct qpnp_bms_chip *chip)
 					POWER_SUPPLY_PROP_CHARGE_TYPE, &ret);
 		return ret.intval != POWER_SUPPLY_CHARGE_TYPE_NONE;
 	}
-
+#endif
+	int charger_status;
+        charger_status = smb345_get_charging_status();
+        if (charger_status == 1 || charger_status == 4)
+		return 1;
+        else if (charger_status == 2 || charger_status == 3)
+		return 0;
+	else
+                return POWER_SUPPLY_STATUS_UNKNOWN;
 	/* Default to false if the battery power supply is not registered. */
 	pr_debug("battery power supply is not registered\n");
 	return false;
@@ -1196,6 +1259,13 @@ static int get_battery_status(struct qpnp_bms_chip *chip)
 	/* Default to false if the battery power supply is not registered. */
 	pr_debug("battery power supply is not registered\n");
 	return POWER_SUPPLY_STATUS_UNKNOWN;
+#if 0
+	int charger_status;
+	charger_status = smb345_get_charging_status();
+	if (charger_status < 0)
+		return POWER_SUPPLY_STATUS_UNKNOWN;
+	return charger_status;
+#endif
 }
 
 static int get_batt_therm(struct qpnp_bms_chip *chip, int *batt_temp)
@@ -1386,7 +1456,7 @@ static int scale_soc_while_chg(struct qpnp_bms_chip *chip, int chg_time_sec,
 
 	return scaled_soc;
 }
-
+#if 0
 static int report_eoc(struct qpnp_bms_chip *chip)
 {
 	int rc = -EINVAL;
@@ -1512,7 +1582,7 @@ static void check_eoc_condition(struct qpnp_bms_chip *chip)
 		}
 	}
 }
-
+#endif
 static int report_voltage_based_soc(struct qpnp_bms_chip *chip)
 {
 	pr_debug("Reported voltage based soc = %d\n",
@@ -1530,6 +1600,26 @@ static int report_vm_bms_soc(struct qpnp_bms_chip *chip)
 	int time_since_last_change_sec = 0, charge_time_sec = 0;
 	unsigned long last_change_sec;
 	bool charging;
+	if(entry_mode == 4)
+	{
+		charging = is_charging_toggle_online();
+		if(charging)
+		{
+			if(!wake_lock_active(&wakelock_ac))
+			{
+				BAT_DBG("Lock wakelock_ac\n");
+				wake_lock(&wakelock_ac);
+			}
+		}
+		else
+		{
+			if(wake_lock_active(&wakelock_ac))
+                        {
+				BAT_DBG("Unlock wakelock_ac\n");
+				wake_unlock(&wakelock_ac);
+			}
+		}
+	}
 
 	soc = chip->calculated_soc;
 
@@ -1538,7 +1628,7 @@ static int report_vm_bms_soc(struct qpnp_bms_chip *chip)
 
 	charging = is_battery_charging(chip);
 
-	pr_debug("charging=%d last_soc=%d last_soc_unbound=%d\n",
+	pr_info("charging=%d last_soc=%d last_soc_unbound=%d\n",
 		charging, chip->last_soc, chip->last_soc_unbound);
 	/*
 	 * account for charge time - limit it to SOC_CATCHUP_SEC to
@@ -1628,12 +1718,12 @@ static int report_vm_bms_soc(struct qpnp_bms_chip *chip)
 	soc = bound_soc(soc);
 	if ((soc != chip->last_soc) || (soc == 100)) {
 		chip->last_soc = soc;
-		check_eoc_condition(chip);
+		/*check_eoc_condition(chip);
 		if ((chip->dt.cfg_soc_resume_limit > 0) && !charging)
-			check_recharge_condition(chip);
+			check_recharge_condition(chip);*/
 	}
 
-	pr_debug("last_soc=%d calculated_soc=%d soc=%d time_since_last_change=%d\n",
+	pr_info("last_soc=%d calculated_soc=%d soc=%d time_since_last_change=%d\n",
 			chip->last_soc, chip->calculated_soc,
 			soc, time_since_last_change_sec);
 
@@ -1887,9 +1977,9 @@ static int calculate_soc_from_voltage(struct qpnp_bms_chip *chip)
 	pr_debug("vbat used = %duv\n", vbat_uv);
 	pr_debug("Calculated voltage based soc=%d\n", voltage_based_soc);
 
-	if (voltage_based_soc == 100)
+	/*if (voltage_based_soc == 100)
 		if (chip->dt.cfg_report_charger_eoc)
-			report_eoc(chip);
+			report_eoc(chip);*/
 
 	return 0;
 }
@@ -1900,6 +1990,13 @@ static void monitor_soc_work(struct work_struct *work)
 				struct qpnp_bms_chip,
 				monitor_soc_work.work);
 	int rc, vbat_uv = 0, new_soc = 0, batt_temp;
+        char bms_status_str[5][5] = {
+            "UNKN",
+            "CHRG",
+            "DISC",
+            "NOTC",
+            "FULL"
+        };
 
 	bms_stay_awake(&chip->vbms_soc_wake_source);
 
@@ -1968,6 +2065,10 @@ static void monitor_soc_work(struct work_struct *work)
 					chip->dt.cfg_use_voltage_soc)
 		schedule_delayed_work(&chip->monitor_soc_work,
 			msecs_to_jiffies(get_calculation_delay_ms(chip)));
+
+	BAT_DBG("P:%d, T:%d, V:%d, C:%d, S:%s, FCC:%d\n",
+		chip->last_soc, batt_temp, vbat_uv/1000,
+		-((chip->current_now)/1000), bms_status_str[get_battery_status(chip)], chip->batt_data->fcc);
 
 	mutex_unlock(&chip->last_soc_mutex);
 
@@ -2087,7 +2188,7 @@ static int qpnp_vm_bms_power_get_property(struct power_supply *psy,
 			val->intval += chip->dt.cfg_r_conn_mohm;
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
-		val->intval = get_prop_bms_current_now(chip);
+		val->intval = -(get_prop_bms_current_now(chip));
 		break;
 	case POWER_SUPPLY_PROP_BATTERY_TYPE:
 		val->strval = chip->batt_data->battery_type;
@@ -3222,7 +3323,6 @@ static const struct file_operations bms_data_debugfs_ops = {
 
 static int set_battery_data(struct qpnp_bms_chip *chip)
 {
-	int64_t battery_id;
 	int rc = 0;
 	struct bms_battery_data *batt_data;
 	struct device_node *node;
@@ -3232,12 +3332,34 @@ static int set_battery_data(struct qpnp_bms_chip *chip)
 		pr_err("cannot read battery id err = %lld\n", battery_id);
 		return battery_id;
 	}
-	node = of_find_node_by_name(chip->spmi->dev.of_node,
-					"qcom,battery-data");
-	if (!node) {
-			pr_err("No available batterydata\n");
-			return -EINVAL;
+	pr_info("BAT_ID : %lld\n",battery_id);
+
+	/* ++++++++++++distinguish battery type to load different battery-data++++++++++++ */
+	if (750000 <= battery_id && battery_id <= 1050000)
+	{
+		cell_type = 0;
+		node = of_find_node_by_name(chip->spmi->dev.of_node,
+						"qcom,battery-data-ATL");
+		if (!node) {
+				pr_err("No available batterydata\n");
+				return -EINVAL;
+		}
 	}
+	else if (450000 <= battery_id && battery_id < 750000)
+	{
+		node = of_find_node_by_name(chip->spmi->dev.of_node,
+						"qcom,battery-data-LGC");
+		if (!node) {
+				pr_err("No available batterydata\n");
+				return -EINVAL;
+		}
+	}
+	else
+	{
+		pr_err("BATT_ID out of range");
+		return -EINVAL;
+	}
+	/* ------------distinguish battery type to load different battery-data------------ */
 
 	batt_data = devm_kzalloc(chip->dev,
 			sizeof(struct bms_battery_data), GFP_KERNEL);
@@ -3536,6 +3658,29 @@ unregister_chrdev:
 	return rc;
 }
 
+/* ++++++++++fw read++++++++++*/
+static int vm_bms_debugfs_show(struct seq_file *s, void *data)
+{
+	if(cell_type == 0)
+		seq_printf(s, "ATL-%lld\n", battery_id);
+	else
+		seq_printf(s, "LGC-%lld\n", battery_id);
+    return 0;
+}
+
+static int vm_bms_debugfs_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, vm_bms_debugfs_show, inode->i_private);
+}
+
+static const struct file_operations vm_bms_debugfs_fops = {
+    .open = vm_bms_debugfs_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+    .release = single_release,
+};
+/* ----------fw read----------*/
+
 static int qpnp_vm_bms_probe(struct spmi_device *spmi)
 {
 	struct qpnp_bms_chip *chip;
@@ -3629,6 +3774,8 @@ static int qpnp_vm_bms_probe(struct spmi_device *spmi)
 		pr_err("Unable to config battery data %d\n", rc);
 		goto fail_init;
 	}
+
+	//debugfs_create_file("VMBMSFW", 0666, NULL, NULL, &vm_bms_debugfs_fops);
 
 	wakeup_source_init(&chip->vbms_lv_wake_source.source, "vbms_lv_wake");
 	wakeup_source_init(&chip->vbms_cv_wake_source.source, "vbms_cv_wake");
@@ -3903,6 +4050,7 @@ static int bms_suspend(struct device *dev)
 
 	if (chip->apply_suspend_config) {
 		if (chip->dt.cfg_force_s3_on_suspend) {
+			disable_bms_irq(&chip->fifo_update_done_irq);
 			pr_debug("Forcing S3 state\n");
 			mutex_lock(&chip->state_change_mutex);
 			force_fsm_state(chip, S3_STATE);
@@ -3940,6 +4088,7 @@ static int bms_resume(struct device *dev)
 				force_fsm_state(chip, S2_STATE);
 			}
 			mutex_unlock(&chip->state_change_mutex);
+			enable_bms_irq(&chip->fifo_update_done_irq);
 			/*
 			 * if we were charging while suspended, we will
 			 * be woken up by the fifo done interrupt and no
@@ -3989,9 +4138,10 @@ static struct spmi_driver qpnp_vm_bms_driver = {
 
 static int __init qpnp_vm_bms_init(void)
 {
+	wake_lock_init(&wakelock_ac, WAKE_LOCK_SUSPEND, "wakelock_ac");
 	return spmi_driver_register(&qpnp_vm_bms_driver);
 }
-module_init(qpnp_vm_bms_init);
+late_initcall(qpnp_vm_bms_init);
 
 static void __exit qpnp_vm_bms_exit(void)
 {

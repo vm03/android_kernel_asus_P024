@@ -127,6 +127,8 @@ struct mmc_blk_data {
 #define MMC_BLK_WRITE		BIT(1)
 #define MMC_BLK_DISCARD		BIT(2)
 #define MMC_BLK_SECDISCARD	BIT(3)
+#define MMC_BLK_FLUSH		BIT(4)
+
 
 	/*
 	 * Only set in main mmc_blk_data associated
@@ -1001,7 +1003,34 @@ static int mmc_blk_compat_ioctl(struct block_device *bdev, fmode_t mode,
 	return mmc_blk_ioctl(bdev, mode, cmd, (unsigned long) compat_ptr(arg));
 }
 #endif
+static int get_card_status(struct mmc_card *card, u32 *status, int retries);
+/* return
+ *   0: media is absent
+ *   1: media is present */
+static int mmc_is_media_present(struct gendisk *disk)
+{
+    struct mmc_blk_data *md;
+    struct mmc_card *card;
+    int present = 1;
 
+    md = mmc_blk_get(disk);
+    if (!md) {
+        pr_debug("No mmc_blk_data, %s:%d\n", __func__, __LINE__);
+        return 1;
+    }
+    card = md->queue.card;
+    /* MMC_CARD_REMOVED will be set when
+     * card removed -> CD pin irq handler -> detect task -> mmc_rescan -> bus_ops->dectec
+     *
+     * It may have hundreds MS delay */
+    if (mmc_card_removed(card) ||
+        (card && card->host && card->host->ops->get_cd && !(card->host->ops->get_cd)(card->host))) {
+        present = 0;
+        pr_debug("card absent\n");
+    }
+    mmc_blk_put(md);
+    return present;
+}
 static const struct block_device_operations mmc_bdops = {
 	.open			= mmc_blk_open,
 	.release		= mmc_blk_release,
@@ -1011,6 +1040,7 @@ static const struct block_device_operations mmc_bdops = {
 #ifdef CONFIG_COMPAT
 	.compat_ioctl		= mmc_blk_compat_ioctl,
 #endif
+	.is_media_present = mmc_is_media_present,
 };
 
 static inline int mmc_blk_part_switch(struct mmc_card *card,
@@ -1137,18 +1167,21 @@ static int mmc_blk_cmd_error(struct request *req, const char *name, int error,
 	switch (error) {
 	case -EILSEQ:
 		/* response crc error, retry the r/w cmd */
-		pr_err("%s: %s sending %s command, card status %#x\n",
-			req->rq_disk->disk_name, "response CRC error",
+		pr_err_ratelimited(
+			"%s: response CRC error sending %s command, card status %#x\n",
+			req->rq_disk->disk_name,
 			name, status);
 		return ERR_RETRY;
 
 	case -ETIMEDOUT:
-		pr_err("%s: %s sending %s command, card status %#x\n",
-			req->rq_disk->disk_name, "timed out", name, status);
+		pr_err_ratelimited(
+			"%s: timed out sending %s command, card status %#x\n",
+			req->rq_disk->disk_name, name, status);
 
 		/* If the status cmd initially failed, retry the r/w cmd */
 		if (!status_valid) {
-			pr_err("%s: status not valid, retrying timeout\n", req->rq_disk->disk_name);
+			pr_err_ratelimited("%s: status not valid, retrying timeout\n",
+				req->rq_disk->disk_name);
 			return ERR_RETRY;
 		}
 		/*
@@ -1157,17 +1190,22 @@ static int mmc_blk_cmd_error(struct request *req, const char *name, int error,
 		 * have corrected the state problem above.
 		 */
 		if (status & (R1_COM_CRC_ERROR | R1_ILLEGAL_COMMAND)) {
-			pr_err("%s: command error, retrying timeout\n", req->rq_disk->disk_name);
+			pr_err_ratelimited(
+				"%s: command error, retrying timeout\n",
+				req->rq_disk->disk_name);
 			return ERR_RETRY;
 		}
 
 		/* Otherwise abort the command */
-		pr_err("%s: not retrying timeout\n", req->rq_disk->disk_name);
+		pr_err_ratelimited(
+			"%s: not retrying timeout\n",
+			req->rq_disk->disk_name);
 		return ERR_ABORT;
 
 	default:
 		/* We don't understand the error code the driver gave us */
-		pr_err("%s: unknown error %d sending read/write command, card status %#x\n",
+		pr_err_ratelimited(
+			"%s: unknown error %d sending read/write command, card status %#x\n",
 		       req->rq_disk->disk_name, error, status);
 		return ERR_ABORT;
 	}
@@ -1465,6 +1503,16 @@ static int mmc_blk_issue_flush(struct mmc_queue *mq, struct request *req)
 	int ret = 0;
 
 	ret = mmc_flush_cache(card);
+	if (ret == -ENODEV) {
+		pr_err("%s: %s: restart mmc card",
+				req->rq_disk->disk_name, __func__);
+		if (mmc_blk_reset(md, card->host, MMC_BLK_FLUSH))
+			pr_err("%s: %s: fail to restart mmc",
+				req->rq_disk->disk_name, __func__);
+		else
+			mmc_blk_reset_success(md, MMC_BLK_FLUSH);
+	}
+
 	if (ret == -ETIMEDOUT) {
 		pr_info("%s: %s: requeue flush request after timeout",
 				req->rq_disk->disk_name, __func__);
@@ -2567,6 +2615,10 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 
 	do {
 		if (rqc) {
+#ifdef CONFIG_MMC_PERF_PROFILING
+            if (rq_data_dir(req) == WRITE)
+                card->sectors_changed += blk_rq_sectors(req);
+#endif
 			/*
 			 * When 4KB native sector is enabled, only 8 blocks
 			 * multiple read or write is allowed
@@ -2663,6 +2715,14 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 		case MMC_BLK_RETRY:
 			if (retry++ < MMC_BLK_MAX_RETRIES)
 				break;
+            /* Some card declares CMD23 supports in SCR.33,
+             * but actually, it doesn't response CMD23. */
+            if (mmc_card_sd(card) && (brq->sbc.opcode == MMC_SET_BLOCK_COUNT) &&
+                (card->sd_bus_speed != UHS_SDR104_BUS_SPEED)) {
+                    card->quirks |= MMC_QUIRK_BLK_NO_CMD23;
+                    pr_info("%s: disable CMD23 due to card doesn't response it\n",
+                        mmc_hostname(card->host));
+            }
 			/* Fall through */
 		case MMC_BLK_ABORT:
 			if (!mmc_blk_reset(md, card->host, type) &&
@@ -3288,7 +3348,8 @@ static int mmc_blk_probe(struct mmc_card *card)
 	mmc_fixup_device(card, blk_fixups);
 
 #ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
-	mmc_set_bus_resume_policy(card->host, 1);
+	if (card->host->caps2 & MMC_CAP2_DEFERRED_RESUME)
+		mmc_set_bus_resume_policy(card->host, 1);
 #endif
 	if (mmc_add_disk(md))
 		goto out;

@@ -38,6 +38,7 @@
 #endif /* __CHECKER__ */
 
 #include <linux/kernel.h>
+#include <linux/ratelimit.h>
 #include <linux/init.h>
 #include <linux/export.h>
 #include <linux/sched.h>
@@ -345,7 +346,7 @@ int unwind_frame(struct stackframe *frame)
 
 	idx = unwind_find_idx(frame->pc);
 	if (!idx) {
-		pr_warning("unwind: Index not found %08lx\n", frame->pc);
+		pr_warn_ratelimited("unwind: Index not found %08lx\n", frame->pc);
 		return -URC_FAILURE;
 	}
 

@@ -84,7 +84,7 @@
 #define MSM_CPP_START_ADDRESS		0x0
 #define MSM_CPP_END_ADDRESS			0x3F00
 
-#define MSM_CPP_POLL_RETRIES		20
+#define MSM_CPP_POLL_RETRIES		200
 #define MSM_CPP_TASKLETQ_SIZE		16
 #define MSM_CPP_TX_FIFO_LEVEL		16
 #define MSM_CPP_RX_FIFO_LEVEL		512
@@ -228,5 +228,8 @@ struct cpp_device {
 	struct msm_cpp_buff_queue_info_t *buff_queue;
 	uint32_t num_buffq;
 	struct v4l2_subdev *buf_mgr_subdev;
+	uint32_t bus_client;
+	uint32_t bus_idx;
+	uint32_t bus_master_flag;
 };
 #endif /* __MSM_CPP_H__ */

@@ -224,6 +224,7 @@ struct msm8x16_wcd_priv {
 	bool mclk_enabled;
 	bool clock_active;
 	bool config_mode_active;
+	u16 boost_option;
 	bool spk_boost_set;
 	bool ear_pa_boost_set;
 	bool ext_spk_boost_set;
@@ -235,6 +236,7 @@ struct msm8x16_wcd_priv {
 	/* cal info for codec */
 	struct fw_info *fw_data;
 	struct blocking_notifier_head notifier;
+	unsigned long status_mask;
 
 };
 

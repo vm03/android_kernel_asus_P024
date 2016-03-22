@@ -2437,6 +2437,39 @@ static unsigned int mmc_erase_timeout(struct mmc_card *card,
 		return mmc_mmc_erase_timeout(card, arg, qty);
 }
 
+static int mmc_dummy_single_block_read(struct mmc_card *card, unsigned int from)
+{
+    struct mmc_request mrq = {NULL};
+    struct mmc_command cmd = {0};
+    struct mmc_data data = {0};
+    struct scatterlist sg;
+    u8 transfer_buf[512];
+
+	mrq.sbc = NULL;
+	mrq.cmd = &cmd;
+	mrq.data = &data;
+	mrq.stop = NULL;
+
+    sg_init_one(&sg, transfer_buf, sizeof(transfer_buf));
+    cmd.opcode = MMC_READ_SINGLE_BLOCK;
+    cmd.arg = from;
+    cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1;
+	data.blksz = 512;
+	data.blocks = 1;
+    data.flags |= MMC_DATA_READ;
+	data.sg = &sg;
+	data.sg_len = 1;
+
+    mmc_set_data_timeout(&data, card);
+    mmc_wait_for_req(card->host, &mrq);
+
+	if (cmd.error)
+		return cmd.error;
+	if (data.error)
+		return data.error;
+	return 0;
+}
+
 static int mmc_do_erase(struct mmc_card *card, unsigned int from,
 			unsigned int to, unsigned int arg)
 {
@@ -2479,6 +2512,14 @@ static int mmc_do_erase(struct mmc_card *card, unsigned int from,
 		from <<= 9;
 		to <<= 9;
 	}
+
+    if ((card->quirks & MMC_QUICK_BROKEN_DISCARD) &&
+        (arg == MMC_DISCARD_ARG || arg == MMC_TRIM_ARG)) {
+        /* sending out a dummy single dector read,
+         * start address same as "from" */
+        if ((err = mmc_dummy_single_block_read(card, from)))
+            pr_err("%s: error in sending dummy read, err = %d\n", __func__, err);
+    }
 
 	if (mmc_card_sd(card))
 		cmd.opcode = SD_ERASE_WR_BLK_START;
@@ -3358,8 +3399,12 @@ void mmc_rescan(struct work_struct *work)
 		container_of(work, struct mmc_host, detect.work);
 	bool extend_wakelock = false;
 
-	if (host->rescan_disable)
-		return;
+	if (mmc_is_force_pm_resume(host)) {
+		mmc_resume_bus(host);
+	} else {
+        if (host->rescan_disable)
+            return;
+    }
 
 	/* If there is a non-removable card registered, only scan once */
 	if ((host->caps & MMC_CAP_NONREMOVABLE) && host->rescan_entered)
@@ -3415,8 +3460,11 @@ void mmc_rescan(struct work_struct *work)
 
 	mmc_rpm_hold(host, &host->class_dev);
 	mmc_claim_host(host);
-	if (!mmc_rescan_try_freq(host, host->f_min))
+	if (!mmc_rescan_try_freq(host, host->f_min)) {
+            host->caps &= ~MMC_CAP_NEEDS_POLL;
+            pr_debug("%s (polling disabled)", mmc_hostname(host));
 		extend_wakelock = true;
+	}
 	mmc_release_host(host);
 	mmc_rpm_release(host, &host->class_dev);
  out:
@@ -3426,16 +3474,31 @@ void mmc_rescan(struct work_struct *work)
 
 	if (host->caps & MMC_CAP_NEEDS_POLL)
 		mmc_schedule_delayed_work(&host->detect, HZ);
+	/*
+	 * If retry_timeout do not define in advance, set as 10
+	 */
+	if(host->retry_timeout > 10)
+		host->retry_timeout = 10;
+
+	host->retry_timeout--;
+	if (host->retry_timeout == 0)
+		host->caps &= ~MMC_CAP_NEEDS_POLL;
+	else
+		pr_debug("%s: reschedule detect work: %d\n",
+
+	mmc_hostname(host), host->retry_timeout);
 }
 
 void mmc_start_host(struct mmc_host *host)
 {
+	mmc_claim_host(host);
 	host->f_init = max(freqs[0], host->f_min);
 	host->rescan_disable = 0;
 	if (host->caps2 & MMC_CAP2_NO_PRESCAN_POWERUP)
 		mmc_power_off(host);
 	else
 		mmc_power_up(host);
+	mmc_release_host(host);
 	mmc_detect_change(host, 0);
 }
 
@@ -3594,9 +3657,11 @@ int mmc_flush_cache(struct mmc_card *card)
 			pr_err("%s: cache flush timeout\n",
 					mmc_hostname(card->host));
 			rc = mmc_interrupt_hpi(card);
-			if (rc)
+			if (rc) {
 				pr_err("%s: mmc_interrupt_hpi() failed (%d)\n",
 						mmc_hostname(host), rc);
+				err = -ENODEV;
+			}
 		} else if (err) {
 			pr_err("%s: cache flush error %d\n",
 					mmc_hostname(card->host), err);
@@ -3728,8 +3793,11 @@ int mmc_suspend_host(struct mmc_host *host)
 	}
 	mmc_bus_put(host);
 
-	if (!err && !mmc_card_keep_power(host))
+	if (!err && !mmc_card_keep_power(host)) {
+		mmc_claim_host(host);
 		mmc_power_off(host);
+		mmc_release_host(host);
+	}
 
 	trace_mmc_suspend_host(mmc_hostname(host), err,
 			ktime_to_us(ktime_sub(ktime_get(), start)));
@@ -3753,15 +3821,18 @@ int mmc_resume_host(struct mmc_host *host)
 	ktime_t start = ktime_get();
 
 	mmc_bus_get(host);
-	if (mmc_bus_manual_resume(host)) {
+	if (!mmc_is_force_pm_resume(host) && mmc_bus_manual_resume(host)) {
 		host->bus_resume_flags |= MMC_BUSRESUME_NEEDS_RESUME;
 		mmc_bus_put(host);
 		return 0;
 	}
+    mmc_clr_force_pm_resume(host);
 
 	if (host->bus_ops && !host->bus_dead) {
 		if (!mmc_card_keep_power(host)) {
+			mmc_claim_host(host);
 			mmc_power_up(host);
+			mmc_release_host(host);
 			mmc_select_voltage(host, host->ocr);
 			/*
 			 * Tell runtime PM core we just powered up the card,
@@ -3782,6 +3853,7 @@ int mmc_resume_host(struct mmc_host *host)
 			pr_warning("%s: error %d during resume "
 					    "(card was removed?)\n",
 					    mmc_hostname(host), err);
+			mmc_set_force_pm_resume(host);
 			err = 0;
 		}
 	}
@@ -3867,7 +3939,7 @@ int mmc_pm_notify(struct notifier_block *notify_block,
 	case PM_POST_RESTORE:
 
 		spin_lock_irqsave(&host->lock, flags);
-		if (mmc_bus_manual_resume(host)) {
+		if (mmc_bus_manual_resume(host) && !mmc_is_force_pm_resume(host)) {
 			spin_unlock_irqrestore(&host->lock, flags);
 			break;
 		}

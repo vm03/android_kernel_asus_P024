@@ -961,7 +961,17 @@ static int __init clock_late_init(void)
 	}
 
 	list_for_each_entry_safe(h, h_temp, &handoff_list, list) {
+
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+		if(!strncmp(h->clk->dbg_name, "gcc_gp1_clk", 11)){
+			printk("[DISPLAY] Skip clk %s handoff\n",h->clk->dbg_name);
+		}else{
+			clk_disable_unprepare(h->clk);
+		}
+#else
 		clk_disable_unprepare(h->clk);
+#endif
+
 		list_del(&h->list);
 		kfree(h);
 	}

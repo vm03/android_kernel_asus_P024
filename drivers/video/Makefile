@@ -178,3 +178,7 @@ obj-$(CONFIG_VIDEOMODE_HELPERS) += display_timing.o videomode.o
 ifeq ($(CONFIG_OF),y)
 obj-$(CONFIG_VIDEOMODE_HELPERS) += of_display_timing.o of_videomode.o
 endif
+
+#ifeq ($(ASUS_PROJECT), Z380KL)
+  KBUILD_CFLAGS += -DASUS_PROJECT_Z380KL_DISPLAY
+#endif

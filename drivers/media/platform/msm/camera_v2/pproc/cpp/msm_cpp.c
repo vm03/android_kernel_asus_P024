@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -90,6 +90,57 @@ static int msm_cpp_buffer_ops(struct cpp_device *cpp_dev,
 			((to) ? "to" : "from"))
 #define ERR_COPY_FROM_USER() ERR_USER_COPY(0)
 
+/* CPP bus bandwidth definitions */
+static struct msm_bus_vectors msm_cpp_init_vectors[] = {
+	{
+		.src = MSM_BUS_MASTER_CPP,
+		.dst = MSM_BUS_SLAVE_EBI_CH0,
+		.ab  = 0,
+		.ib  = 0,
+	},
+};
+
+static struct msm_bus_vectors msm_cpp_ping_vectors[] = {
+	{
+		.src = MSM_BUS_MASTER_CPP,
+		.dst = MSM_BUS_SLAVE_EBI_CH0,
+		.ab  = 0,
+		.ib  = 0,
+	},
+};
+
+static struct msm_bus_vectors msm_cpp_pong_vectors[] = {
+	{
+		.src = MSM_BUS_MASTER_CPP,
+		.dst = MSM_BUS_SLAVE_EBI_CH0,
+		.ab  = 0,
+		.ib  = 0,
+	},
+};
+
+
+
+static struct msm_bus_paths msm_cpp_bus_client_config[] = {
+	{
+		ARRAY_SIZE(msm_cpp_init_vectors),
+		msm_cpp_init_vectors,
+	},
+	{
+		ARRAY_SIZE(msm_cpp_ping_vectors),
+		msm_cpp_ping_vectors,
+	},
+	{
+		ARRAY_SIZE(msm_cpp_pong_vectors),
+		msm_cpp_pong_vectors,
+	},
+};
+
+static struct msm_bus_scale_pdata msm_cpp_bus_scale_data = {
+	msm_cpp_bus_client_config,
+	ARRAY_SIZE(msm_cpp_bus_client_config),
+	.name = "msm_camera_cpp",
+};
+
 #define msm_dequeue(queue, member) ({	   \
 	unsigned long flags;		  \
 	struct msm_device_queue *__q = (queue);	 \
@@ -119,6 +170,57 @@ struct msm_cpp_timer_t {
 };
 
 struct msm_cpp_timer_t cpp_timer;
+
+static int msm_cpp_init_bandwidth_mgr(struct cpp_device *cpp_dev)
+{
+	int rc = 0;
+
+	cpp_dev->bus_client =
+		msm_bus_scale_register_client(&msm_cpp_bus_scale_data);
+	if (!cpp_dev->bus_client) {
+		pr_err("Fail to register bus client\n");
+		return -ENOENT;
+	}
+
+	rc = msm_bus_scale_client_update_request(cpp_dev->bus_client, 1);
+	if (rc < 0) {
+		pr_err("Fail bus scale update %d\n", rc);
+		return -EINVAL;
+	}
+	cpp_dev->bus_idx = 1;
+
+	return 0;
+}
+
+static int msm_cpp_update_bandwidth(struct cpp_device *cpp_dev,
+	uint64_t ab, uint64_t ib)
+{
+
+	int rc;
+	struct msm_bus_paths *path;
+
+	path = &(msm_cpp_bus_scale_data.usecase[cpp_dev->bus_idx]);
+	path->vectors[0].ab = ab;
+	path->vectors[0].ib = ib;
+
+	rc = msm_bus_scale_client_update_request(cpp_dev->bus_client,
+		 cpp_dev->bus_idx);
+	if (rc < 0) {
+		pr_err("Fail bus scale update %d\n", rc);
+		return -EINVAL;
+	}
+	cpp_dev->bus_idx = 3 - cpp_dev->bus_idx;
+
+	return 0;
+}
+
+void msm_cpp_deinit_bandwidth_mgr(struct cpp_device *cpp_dev)
+{
+	if (cpp_dev->bus_client) {
+		msm_bus_scale_unregister_client(cpp_dev->bus_client);
+		cpp_dev->bus_client = 0;
+	}
+}
 
 static void msm_queue_init(struct msm_device_queue *queue, const char *name)
 {
@@ -176,7 +278,8 @@ static int get_clock_index(const char *clk_name)
 }
 
 
-static int msm_cpp_notify_frame_done(struct cpp_device *cpp_dev);
+static int msm_cpp_notify_frame_done(struct cpp_device *cpp_dev,
+	uint8_t put_buf);
 static void cpp_load_fw(struct cpp_device *cpp_dev, char *fw_name_bin);
 static void cpp_timer_callback(unsigned long data);
 
@@ -667,18 +770,20 @@ void msm_cpp_do_tasklet(unsigned long data)
 			if (tx_fifo[i] == MSM_CPP_MSG_ID_CMD) {
 				cmd_len = tx_fifo[i+1];
 				msg_id = tx_fifo[i+2];
-				if (msg_id == MSM_CPP_MSG_ID_FRAME_ACK) {
+				if ((msg_id == MSM_CPP_MSG_ID_FRAME_ACK)
+					&& (atomic_read(&cpp_timer.used))) {
 					CPP_DBG("Frame done!!\n");
-					/* delete CPP timer */
 					CPP_DBG("delete timer.\n");
+					/* delete CPP timer */
 					msm_cpp_clear_timer(cpp_dev);
-					msm_cpp_notify_frame_done(cpp_dev);
-				} else if (msg_id ==
-					MSM_CPP_MSG_ID_FRAME_NACK) {
+					msm_cpp_notify_frame_done(cpp_dev, 0);
+				} else if ((msg_id ==
+					MSM_CPP_MSG_ID_FRAME_NACK)
+					&& (atomic_read(&cpp_timer.used))) {
 					pr_err("NACK error from hw!!\n");
 					CPP_DBG("delete timer.\n");
 					msm_cpp_clear_timer(cpp_dev);
-					msm_cpp_notify_frame_done(cpp_dev);
+					msm_cpp_notify_frame_done(cpp_dev, 0);
 				}
 				i += cmd_len + 2;
 			}
@@ -714,7 +819,11 @@ static int cpp_init_hardware(struct cpp_device *cpp_dev)
 	uint32_t msm_cpp_core_clk_idx;
 	uint32_t msm_micro_iface_idx;
 	uint32_t vbif_version;
-	rc = msm_isp_init_bandwidth_mgr(ISP_CPP);
+
+	if (cpp_dev->bus_master_flag)
+		rc = msm_cpp_init_bandwidth_mgr(cpp_dev);
+	else
+		rc = msm_isp_init_bandwidth_mgr(ISP_CPP);
 	if (rc < 0) {
 		pr_err("%s: Bandwidth registration Failed!\n", __func__);
 		goto bus_scale_register_failed;
@@ -888,7 +997,10 @@ clk_failed:
 	regulator_disable(cpp_dev->fs_cpp);
 	regulator_put(cpp_dev->fs_cpp);
 fs_failed:
-	msm_isp_deinit_bandwidth_mgr(ISP_CPP);
+		if (cpp_dev->bus_master_flag)
+			msm_cpp_deinit_bandwidth_mgr(cpp_dev);
+		else
+			msm_isp_deinit_bandwidth_mgr(ISP_CPP);
 bus_scale_register_failed:
 	return rc;
 }
@@ -918,10 +1030,16 @@ static void cpp_release_hardware(struct cpp_device *cpp_dev)
 	cpp_dev->fs_cpp = NULL;
 	if (cpp_dev->stream_cnt > 0) {
 		pr_err("error: stream count active\n");
-		msm_isp_update_bandwidth(ISP_CPP, 0, 0);
+		if (cpp_dev->bus_master_flag)
+			rc = msm_cpp_update_bandwidth(cpp_dev, 0, 0);
+		else
+			rc = msm_isp_update_bandwidth(ISP_CPP, 0, 0);
 	}
 	cpp_dev->stream_cnt = 0;
-	msm_isp_deinit_bandwidth_mgr(ISP_CPP);
+	if (cpp_dev->bus_master_flag)
+		msm_cpp_deinit_bandwidth_mgr(cpp_dev);
+	else
+		msm_isp_deinit_bandwidth_mgr(ISP_CPP);
 }
 
 static void cpp_load_fw(struct cpp_device *cpp_dev, char *fw_name_bin)
@@ -1175,7 +1293,8 @@ static int msm_cpp_buffer_ops(struct cpp_device *cpp_dev,
 	return rc;
 }
 
-static int msm_cpp_notify_frame_done(struct cpp_device *cpp_dev)
+static int msm_cpp_notify_frame_done(struct cpp_device *cpp_dev,
+	uint8_t put_buf)
 {
 	struct v4l2_event v4l2_evt;
 	struct msm_queue_cmd *frame_qcmd = NULL;
@@ -1212,12 +1331,22 @@ static int msm_cpp_notify_frame_done(struct cpp_device *cpp_dev)
 			buff_mgr_info.timestamp = processed_frame->timestamp;
 			buff_mgr_info.index =
 				processed_frame->output_buffer_info[0].index;
-			rc = msm_cpp_buffer_ops(cpp_dev,
-				VIDIOC_MSM_BUF_MNGR_BUF_DONE,
-				&buff_mgr_info);
-			if (rc < 0) {
-				pr_err("error putting buffer\n");
-				rc = -EINVAL;
+			if (put_buf) {
+				rc = msm_cpp_buffer_ops(cpp_dev,
+					VIDIOC_MSM_BUF_MNGR_PUT_BUF,
+					&buff_mgr_info);
+				if (rc < 0) {
+					pr_err("error putting buffer\n");
+					rc = -EINVAL;
+				}
+			} else {
+				rc = msm_cpp_buffer_ops(cpp_dev,
+					VIDIOC_MSM_BUF_MNGR_BUF_DONE,
+					&buff_mgr_info);
+				if (rc < 0) {
+					pr_err("error putting buffer\n");
+					rc = -EINVAL;
+				}
 			}
 		}
 
@@ -1234,12 +1363,22 @@ static int msm_cpp_notify_frame_done(struct cpp_device *cpp_dev)
 			buff_mgr_info.timestamp = processed_frame->timestamp;
 			buff_mgr_info.index =
 				processed_frame->output_buffer_info[1].index;
-			rc = msm_cpp_buffer_ops(cpp_dev,
-				VIDIOC_MSM_BUF_MNGR_BUF_DONE,
+			if (put_buf) {
+				rc = msm_cpp_buffer_ops(cpp_dev,
+					VIDIOC_MSM_BUF_MNGR_PUT_BUF,
 					&buff_mgr_info);
-			if (rc < 0) {
-				pr_err("error putting buffer\n");
-				rc = -EINVAL;
+				if (rc < 0) {
+					pr_err("error putting buffer\n");
+					rc = -EINVAL;
+				}
+			} else {
+				rc = msm_cpp_buffer_ops(cpp_dev,
+					VIDIOC_MSM_BUF_MNGR_BUF_DONE,
+					&buff_mgr_info);
+				if (rc < 0) {
+					pr_err("error putting buffer\n");
+					rc = -EINVAL;
+				}
 			}
 		}
 		v4l2_evt.id = processed_frame->inst_id;
@@ -1273,11 +1412,8 @@ static int msm_cpp_dump_frame_cmd(struct msm_cpp_frame_info_t *frame_info)
 
 static void msm_cpp_do_timeout_work(struct work_struct *work)
 {
-	int ret;
-	uint32_t i = 0;
-	struct msm_cpp_frame_info_t *this_frame = NULL;
 
-	pr_err("cpp_timer_callback called. (jiffies=%lu)\n",
+	pr_info("cpp_timer_callback called. (jiffies=%lu)\n",
 		jiffies);
 	if (!work || cpp_timer.data.cpp_dev->state != CPP_STATE_ACTIVE) {
 		pr_err("Invalid work:%p or state:%d\n", work,
@@ -1285,14 +1421,20 @@ static void msm_cpp_do_timeout_work(struct work_struct *work)
 		return;
 	}
 	if (!atomic_read(&cpp_timer.used)) {
-		pr_err("Delayed trigger, IRQ serviced\n");
+		pr_info("Delayed trigger, IRQ serviced\n");
 		return;
 	}
 
 	disable_irq(cpp_timer.data.cpp_dev->irq->start);
 	pr_err("Reloading firmware\n");
-	cpp_load_fw(cpp_timer.data.cpp_dev, NULL);
-	pr_err("Firmware loading done\n");
+	if (!atomic_read(&cpp_timer.used)) {
+		pr_err("Delayed trigger, IRQ serviced\n");
+		return;
+	}
+	atomic_set(&cpp_timer.used, 0);
+	cpp_load_fw(cpp_timer.data.cpp_dev,
+		cpp_timer.data.cpp_dev->fw_name_bin);
+	pr_info("Firmware loading done\n");
 	enable_irq(cpp_timer.data.cpp_dev->irq->start);
 	msm_camera_io_w_mb(0x8, cpp_timer.data.cpp_dev->base +
 		MSM_CPP_MICRO_IRQGEN_MASK);
@@ -1300,35 +1442,14 @@ static void msm_cpp_do_timeout_work(struct work_struct *work)
 		cpp_timer.data.cpp_dev->base +
 		MSM_CPP_MICRO_IRQGEN_CLR);
 
-	if (!atomic_read(&cpp_timer.used)) {
-		pr_err("Delayed trigger, IRQ serviced\n");
-		return;
-	}
-
-	if (cpp_timer.data.cpp_dev->timeout_trial_cnt >=
-		MSM_CPP_MAX_TIMEOUT_TRIAL) {
-		pr_info("Max trial reached\n");
-		msm_cpp_notify_frame_done(cpp_timer.data.cpp_dev);
-		cpp_timer.data.cpp_dev->timeout_trial_cnt = 0;
-		return;
-	}
-
-	this_frame = cpp_timer.data.processed_frame;
-	pr_err("Starting timer to fire in %d ms. (jiffies=%lu)\n",
-		CPP_CMD_TIMEOUT_MS, jiffies);
-	ret = mod_timer(&cpp_timer.cpp_timer,
-		jiffies + msecs_to_jiffies(CPP_CMD_TIMEOUT_MS));
-	if (ret)
-		pr_err("error in mod_timer\n");
-
-	pr_err("Rescheduling for identity=0x%x, frame_id=%03d\n",
-		this_frame->identity, this_frame->frame_id);
-	msm_cpp_write(0x6, cpp_timer.data.cpp_dev->base);
-	msm_cpp_dump_frame_cmd(this_frame);
-	for (i = 0; i < this_frame->msg_len; i++)
-		msm_cpp_write(this_frame->cpp_cmd_msg[i],
-			cpp_timer.data.cpp_dev->base);
-	cpp_timer.data.cpp_dev->timeout_trial_cnt++;
+	mutex_lock(&cpp_timer.data.cpp_dev->mutex);
+	msm_cpp_dump_frame_cmd(cpp_timer.data.processed_frame);
+	msm_cpp_notify_frame_done(cpp_timer.data.cpp_dev, 1);
+	atomic_set(&cpp_timer.used, 0);
+	cpp_timer.data.processed_frame = NULL;
+	cpp_timer.data.cpp_dev->timeout_trial_cnt = 0;
+	mutex_unlock(&cpp_timer.data.cpp_dev->mutex);
+	pr_info("exit\n");
 	return;
 }
 
@@ -1366,7 +1487,6 @@ static int msm_cpp_send_frame_to_hardware(struct cpp_device *cpp_dev,
 			jiffies + msecs_to_jiffies(CPP_CMD_TIMEOUT_MS));
 		if (ret)
 			pr_err("error in mod_timer\n");
-
 		msm_cpp_write(0x6, cpp_dev->base);
 		msm_cpp_dump_frame_cmd(process_frame);
 		msm_cpp_poll_rx_empty(cpp_dev->base);
@@ -1682,21 +1802,19 @@ static int msm_cpp_cfg(struct cpp_device *cpp_dev,
 	struct msm_camera_v4l2_ioctl_t *ioctl_ptr)
 {
 	struct msm_cpp_frame_info_t *frame = NULL;
-	struct msm_cpp_frame_info_t *u_frame_info =
-	  (struct msm_cpp_frame_info_t *)ioctl_ptr->ioctl_ptr;
 	int32_t rc = 0;
 
 	frame = msm_cpp_get_frame(ioctl_ptr);
 	if (!frame) {
 		pr_err("%s: Error allocating frame\n", __func__);
-		rc = -EINVAL;
+		return -ENOMEM;
 	} else {
 		rc = msm_cpp_cfg_frame(cpp_dev, frame);
 	}
 
 	ioctl_ptr->trans_code = rc;
 
-	if (copy_to_user((void __user *)u_frame_info->status, &rc,
+	if (copy_to_user((void __user *)frame->status, &rc,
 		sizeof(int32_t)))
 		pr_err("error cannot copy error\n");
 
@@ -1969,7 +2087,12 @@ long msm_cpp_subdev_ioctl(struct v4l2_subdev *sd,
 			cpp_dev->stream_cnt--;
 			pr_info("stream_cnt:%d\n", cpp_dev->stream_cnt);
 			if (cpp_dev->stream_cnt == 0) {
-				rc = msm_isp_update_bandwidth(ISP_CPP, 0, 0);
+				if (cpp_dev->bus_master_flag)
+					rc = msm_cpp_update_bandwidth(cpp_dev,
+						 0, 0);
+				else
+					rc = msm_isp_update_bandwidth(ISP_CPP,
+						 0, 0);
 				if (rc < 0)
 					pr_err("Bandwidth Reset Failed!\n");
 				cpp_dev->state = CPP_STATE_IDLE;
@@ -2043,13 +2166,22 @@ long msm_cpp_subdev_ioctl(struct v4l2_subdev *sd,
 				pr_err(" Fail to get clock index\n");
 				return -EINVAL;
 			}
-			rc = msm_isp_update_bandwidth(ISP_CPP,
-				clock_settings.avg,
-				clock_settings.inst);
-
+			if (cpp_dev->bus_master_flag)
+				rc = msm_cpp_update_bandwidth(cpp_dev,
+					clock_settings.avg,
+					clock_settings.inst);
+			else
+				rc = msm_isp_update_bandwidth(ISP_CPP,
+					clock_settings.avg,
+					clock_settings.inst);
 			if (rc < 0) {
 				pr_err("Bandwidth Set Failed!\n");
-				msm_isp_update_bandwidth(ISP_CPP, 0, 0);
+				if (cpp_dev->bus_master_flag)
+					rc = msm_cpp_update_bandwidth(cpp_dev,
+						0, 0);
+				else
+					rc = msm_isp_update_bandwidth(ISP_CPP,
+						0, 0);
 				mutex_unlock(&cpp_dev->mutex);
 				return -EINVAL;
 			}
@@ -2331,6 +2463,7 @@ static struct msm_cpp_frame_info_t *get_64bit_cpp_frame_from_compat(
 
 	/* Convert the 32 bit pointer to 64 bit pointer */
 	new_frame->cookie = compat_ptr(new_frame32->cookie);
+	new_frame->status = compat_ptr(new_frame32->status);
 	cpp_cmd_msg_64bit = compat_ptr(new_frame32->cpp_cmd_msg);
 	if ((new_frame->msg_len == 0) ||
 		(new_frame->msg_len > MSM_CPP_MAX_FRAME_LENGTH)) {
@@ -2465,7 +2598,7 @@ static long msm_cpp_subdev_fops_compat_ioctl(struct file *file,
 			rc = msm_cpp_cfg_frame(cpp_dev, cpp_frame);
 		else {
 			pr_err("%s: Error getting frame\n", __func__);
-			rc = -EINVAL;
+			return -ENOMEM;
 		}
 
 		kp_ioctl.trans_code = rc;
@@ -2473,7 +2606,7 @@ static long msm_cpp_subdev_fops_compat_ioctl(struct file *file,
 		/* Convert the 32 bit pointer to 64 bit pointer */
 		status = compat_ptr(u32_frame_info->status);
 
-		if (copy_to_user((void __user *)status, &rc,
+		if (copy_to_user((void __user *)cpp_frame->status, &rc,
 			sizeof(int32_t)))
 			pr_err("error cannot copy error\n");
 
@@ -2568,9 +2701,11 @@ static long msm_cpp_subdev_fops_compat_ioctl(struct file *file,
 		struct msm_cpp_frame_info32_t k32_process_frame;
 
 		CPP_DBG("VIDIOC_MSM_CPP_GET_EVENTPAYLOAD\n");
+		mutex_lock(&cpp_dev->mutex);
 		event_qcmd = msm_dequeue(queue, list_eventdata);
 		if (!event_qcmd) {
 			pr_err("no queue cmd available");
+			mutex_unlock(&cpp_dev->mutex);
 			return -EINVAL;
 		}
 		process_frame = event_qcmd->command;
@@ -2589,6 +2724,7 @@ static long msm_cpp_subdev_fops_compat_ioctl(struct file *file,
 		kfree(process_frame);
 		kfree(event_qcmd);
 		cmd = VIDIOC_MSM_CPP_GET_EVENTPAYLOAD;
+		mutex_unlock(&cpp_dev->mutex);
 		break;
 	}
 	case VIDIOC_MSM_CPP_SET_CLOCK32:
@@ -2856,6 +2992,13 @@ static int cpp_probe(struct platform_device *pdev)
 		pr_err("msm_cpp_get_clk_info() failed\n");
 		goto iommu_err;
 	}
+
+	if (pdev->dev.of_node)
+		rc = of_property_read_u32(pdev->dev.of_node, "bus_master",
+			&cpp_dev->bus_master_flag);
+	if (rc)
+		cpp_dev->bus_master_flag = 0;
+	pr_err("Bus master %d\n", cpp_dev->bus_master_flag);
 
 	rc = cpp_init_hardware(cpp_dev);
 	if (rc < 0)

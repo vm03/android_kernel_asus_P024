@@ -347,6 +347,16 @@ void save_processor_state(void);
 void restore_processor_state(void);
 
 /* kernel/power/main.c */
+#define NOTIFY_WHEN_SCREEN_OFF 0
+#define NOTIFY_WHEN_SCREEN_ON 1
+struct callback_data
+{
+        struct list_head node;
+        int screen_state;
+        void (*callback_fn)(const int state);
+};
+extern struct callback_data *register_screen_state_notifier(void (*cb)(const int));
+extern void unregister_screen_state_notifier(struct callback_data *cb_d);
 extern int register_pm_notifier(struct notifier_block *nb);
 extern int unregister_pm_notifier(struct notifier_block *nb);
 

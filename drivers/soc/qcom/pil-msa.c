@@ -64,6 +64,7 @@
 #define EXTERNAL_BHS_STATUS		BIT(4)
 #define BHS_TIMEOUT_US			50
 
+#define MSS_RESTART_PARAM_ID		0x2
 #define MSS_RESTART_ID			0xA
 
 static int pbl_mba_boot_timeout_ms = 1000;
@@ -168,16 +169,28 @@ static void pil_mss_disable_clks(struct q6v5_data *drv)
 static int pil_mss_restart_reg(struct q6v5_data *drv, u32 mss_restart)
 {
 	int ret = 0;
-	int scm_ret;
+	int scm_ret = 0;
+	struct scm_desc desc = {0};
+
+	desc.args[0] = mss_restart;
+	desc.args[1] = 0;
+	desc.arginfo = SCM_ARGS(2);
 
 	if (drv->restart_reg && !drv->restart_reg_sec) {
 		writel_relaxed(mss_restart, drv->restart_reg);
 		mb();
 		udelay(2);
 	} else if (drv->restart_reg_sec) {
-		ret = scm_call(SCM_SVC_PIL, MSS_RESTART_ID, &mss_restart,
-			sizeof(mss_restart), &scm_ret, sizeof(scm_ret));
-		if (ret)
+		if (!is_scm_armv8()) {
+			ret = scm_call(SCM_SVC_PIL, MSS_RESTART_ID,
+					&mss_restart, sizeof(mss_restart),
+					&scm_ret, sizeof(scm_ret));
+		} else {
+			ret = scm_call2(SCM_SIP_FNID(SCM_SVC_PIL,
+						MSS_RESTART_ID), &desc);
+			scm_ret = desc.ret[0];
+		}
+		if (ret || scm_ret)
 			pr_err("Secure MSS restart failed\n");
 	}
 
@@ -403,8 +416,12 @@ int pil_mss_reset_load_mba(struct pil_desc *pil)
 	}
 
 	drv->mba_size = SZ_1M;
-	md->mba_mem_dev.coherent_dma_mask =
-		DMA_BIT_MASK(sizeof(dma_addr_t) * 8);
+
+ if (md->mba_mem_dev_fixed)
+ 		md->mba_mem_dev = *md->mba_mem_dev_fixed;
+ else
+ 		md->mba_mem_dev.coherent_dma_mask = DMA_BIT_MASK(sizeof(dma_addr_t) * 8);
+
 	init_dma_attrs(&md->attrs_dma);
 	dma_set_attr(DMA_ATTR_STRONGLY_ORDERED, &md->attrs_dma);
 	mba_virt = dma_alloc_attrs(&md->mba_mem_dev, drv->mba_size,
@@ -460,8 +477,11 @@ static int pil_msa_auth_modem_mdt(struct pil_desc *pil, const u8 *metadata,
 	int ret;
 	DEFINE_DMA_ATTRS(attrs);
 
-	drv->mba_mem_dev.coherent_dma_mask =
-		DMA_BIT_MASK(sizeof(dma_addr_t) * 8);
+ 	if (drv->mba_mem_dev_fixed)
+		drv->mba_mem_dev = *drv->mba_mem_dev_fixed;
+ 	else
+ 		drv->mba_mem_dev.coherent_dma_mask = DMA_BIT_MASK(sizeof(dma_addr_t) * 8);
+
 	dma_set_attr(DMA_ATTR_STRONGLY_ORDERED, &attrs);
 	/* Make metadata physically contiguous and 4K aligned. */
 	mdata_virt = dma_alloc_attrs(&drv->mba_mem_dev, size, &mdata_phys,

@@ -94,6 +94,11 @@ extern void fork_init(unsigned long);
 extern void mca_init(void);
 extern void sbus_init(void);
 extern void radix_tree_init(void);
+// Flysky150528: create /proc/printk_state
+#ifdef CONFIG_PRINTK
+extern void create_printk_proc(void);
+#endif
+
 #ifndef CONFIG_DEBUG_RODATA
 static inline void mark_rodata_ro(void) { }
 #endif
@@ -472,10 +477,151 @@ static void __init mm_init(void)
 	vmalloc_init();
 }
 
+unsigned int entry_mode;
+EXPORT_SYMBOL(entry_mode);
+// entry_mode = 1; MOS
+// entry_mode = 2; recovery
+// entry_mode = 3; POS
+// entry_mode = 4; COS
+// entry_mode = 5; MiniOS
+
+/*Chipang add for detect build_vsersion and factory_mode ++*/
+/*
+ *build_vsersion mean TARGET_BUILD_VARIANT
+ *user:3
+ *userdebug:2
+ *eng:1
+ */
+int build_version;
+EXPORT_SYMBOL(build_version);
+int factory_mode;
+EXPORT_SYMBOL(factory_mode);
+static int __init check_build_version(char *p)
+{
+        if (p) {
+                if (!strncmp(p, "3", 1))
+                        build_version = 3;
+                else if (!strncmp(p, "2", 1))
+                        build_version = 2;
+                else {
+                        build_version = 1;
+                        factory_mode = 2;
+                }
+                printk(KERN_ERR "%s:build_version %d\n", __func__, build_version);
+                printk(KERN_ERR "%s:factory_mode %d\n", __func__, factory_mode);
+        }
+        return 0;
+}
+early_param("build_version", check_build_version);
+/*Chipang add for detect build_vsersion and factory_mode --*/
+
+//Jui add ++
+int pcb_id;
+int project_id;
+int hardware_id;
+int tp_id;
+int evb_id;
+static int __init check_pcb_id(char *p)
+{
+	if (p) {
+		sscanf(p, "%d", &pcb_id);
+		printk(KERN_ERR "%s:pcb_id = %d\n", __func__, pcb_id);
+	}
+	return 0;
+}
+early_param("pcb_id", check_pcb_id);
+
+static int __init check_proj_id(char *p)
+{
+        if (p) {
+                sscanf(p, "%d", &project_id);
+                printk(KERN_ERR "%s:proj_id = %d\n", __func__, project_id);
+        }
+        return 0;
+}
+early_param("proj_id", check_proj_id);
+
+static int __init check_hw_id(char *p)
+{
+        if (p) {
+                sscanf(p, "%d", &hardware_id);
+                printk(KERN_ERR "%s:hw_id = %d\n", __func__, hardware_id);
+        }
+        return 0;
+}
+early_param("hw_id", check_hw_id);
+
+static int __init check_tp_id(char *p)
+{
+        if (p) {
+                sscanf(p, "%d", &tp_id);
+                printk(KERN_ERR "%s:tp_id = %d\n", __func__, tp_id);
+        }
+        return 0;
+}
+early_param("tp_id", check_tp_id);
+
+static int __init check_evb_id(char *p)
+{
+        if (p) {
+                sscanf(p, "%d", &evb_id);
+                printk(KERN_ERR "%s:evb_id = %d\n", __func__, evb_id);
+        }
+        return 0;
+}
+early_param("evb_id", check_evb_id);
+
+module_param(hardware_id, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(HW_VERSION, "HW_ID judgement");
+int Read_HW_ID(void)
+{
+        printk(KERN_INFO "HW_ID = 0x%x \n", hardware_id);
+        return hardware_id;
+}
+EXPORT_SYMBOL(Read_HW_ID);
+
+module_param(project_id, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(PROJ_VERSION, "PROJ_ID judgement");
+int Read_PROJ_ID(void)
+{
+        printk(KERN_INFO "PROJ_ID = 0x%x \n", project_id);
+        return project_id;
+}
+EXPORT_SYMBOL(Read_PROJ_ID);
+
+module_param(pcb_id, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(PCB_VERSION, "PCB_ID judgement");
+int Read_PCB_ID(void)
+{
+        printk(KERN_INFO "PCB_ID = 0x%x \n", pcb_id);
+        return pcb_id;
+}
+EXPORT_SYMBOL(Read_PCB_ID);
+
+int Read_TP_ID(void)
+{
+        printk(KERN_INFO "TP_ID = 0x%x \n", tp_id);
+        return tp_id;
+}
+EXPORT_SYMBOL(Read_TP_ID);
+
+int Read_EVB_ID(void)
+{
+        printk(KERN_INFO "EVB_ID = 0x%x \n", evb_id);
+        return evb_id;
+}
+EXPORT_SYMBOL(Read_EVB_ID);
+//Jui add --
+
 asmlinkage void __init start_kernel(void)
 {
 	char * command_line;
 	extern const struct kernel_param __start___param[], __stop___param[];
+        char *loc_main;
+        char *loc_fato;
+        char *loc_fastboot;
+        char *loc_charger;
+        char *loc_minios;
 
 	/*
 	 * Need to run as early as possible, to initialize the
@@ -513,6 +659,41 @@ asmlinkage void __init start_kernel(void)
 	page_alloc_init();
 
 	pr_notice("Kernel command line: %s\n", boot_command_line);
+
+        entry_mode = 1;
+        loc_main = strstr(boot_command_line,"androidboot.mode=main");
+        if(loc_main != NULL)
+        {
+                entry_mode = 1;
+                printk(KERN_NOTICE "string match androidboot.mode=main.\n");
+        }
+        loc_fato = strstr(boot_command_line,"androidboot.mode=fota");
+        if(loc_fato != NULL)
+        {
+                entry_mode = 2;
+                printk(KERN_NOTICE "string match androidboot.mode=fota.\n");
+        }
+        loc_fastboot = strstr(boot_command_line,"androidboot.mode=fastboot");
+        if(loc_fastboot != NULL)
+        {
+                entry_mode = 3;
+                printk(KERN_NOTICE "string match androidboot.mode=fastboot\n");
+        }
+        loc_charger = strstr(boot_command_line,"androidboot.mode=charger");
+        if(loc_charger != NULL)
+        {
+                entry_mode = 4;
+                printk(KERN_NOTICE "string match androidboot.mode=charger\n");
+        }
+        loc_minios = strstr(boot_command_line,"androidboot.mode=factory");
+        if(loc_minios != NULL)
+        {
+                entry_mode = 5;
+                printk(KERN_NOTICE "string match androidboot.mode=factory\n");
+        }
+        printk(KERN_NOTICE "OS Entry_mode = %d\n",entry_mode);
+
+
 	parse_early_param();
 	parse_args("Booting kernel", static_command_line, __start___param,
 		   __stop___param - __start___param,
@@ -824,6 +1005,12 @@ static int __ref kernel_init(void *unused)
 	numa_default_policy();
 
 	flush_delayed_fput();
+
+// Flysky150528: create /proc/printk_state
+#ifdef CONFIG_PRINTK
+        create_printk_proc();
+#endif
+
 
 	if (ramdisk_execute_command) {
 		if (!run_init_process(ramdisk_execute_command))

@@ -53,6 +53,16 @@ struct msm_sensor_fn_t {
 	int (*sensor_power_down) (struct msm_sensor_ctrl_t *);
 	int (*sensor_power_up) (struct msm_sensor_ctrl_t *);
 	int (*sensor_match_id) (struct msm_sensor_ctrl_t *);
+	int (*sensor_read_otp)(struct msm_sensor_ctrl_t *);
+};
+
+struct msm_sensor_otp_data{
+	uint16_t af_inf_pos;
+	uint16_t af_30cm_pos;
+	uint16_t af_10cm_pos;
+	uint16_t af_start_curr;
+	uint8_t module_id;
+	uint8_t vendor_id;
 };
 
 struct msm_sensor_ctrl_t {
@@ -90,6 +100,8 @@ int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl);
 int msm_sensor_check_id(struct msm_sensor_ctrl_t *s_ctrl);
 
 int msm_sensor_match_id(struct msm_sensor_ctrl_t *s_ctrl);
+
+int msm_sensor_read_otp(struct msm_sensor_ctrl_t *s_ctrl);
 
 int32_t msm_sensor_platform_probe(struct platform_device *pdev,
 	const void *data);

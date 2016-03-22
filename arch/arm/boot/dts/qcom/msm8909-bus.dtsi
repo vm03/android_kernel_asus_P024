@@ -48,8 +48,6 @@
 			label = "fab-pcnoc";
 			qcom,fab-dev;
 			qcom,base-name = "pcnoc-base";
-			qcom,base-offset = <0x7000>;
-			qcom,qos-delta = <0x1000>;
 			qcom,bus-type = <1>;
 			clock-names = "bus_clk", "bus_a_clk";
 			clocks = <&clock_rpm  clk_pcnoc_msmbus_clk>,
@@ -68,8 +66,6 @@
 			label = "fab-snoc";
 			qcom,fab-dev;
 			qcom,base-name = "snoc-base";
-			qcom,base-offset = <0x7000>;
-			qcom,qos-off = <0x1000>;
 			qcom,bus-type = <1>;
 			clock-names = "bus_clk", "bus_a_clk";
 			clocks = <&clock_rpm  clk_snoc_msmbus_clk>,
@@ -88,8 +84,6 @@
 			label = "fab-snoc-mm";
 			qcom,fab-dev;
 			qcom,base-name = "snoc-mm-base";
-			qcom,base-offset = <0x7000>;
-			qcom,qos-off = <0x1000>;
 			qcom,bus-type = <1>;
 			qcom,util-fact = <167>;
 			clock-names = "bus_clk", "bus_a_clk";

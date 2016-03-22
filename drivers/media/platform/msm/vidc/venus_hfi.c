@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -87,6 +87,8 @@ static inline int venus_hfi_prepare_enable_clks(
 	struct venus_hfi_device *device);
 static inline void venus_hfi_disable_unprepare_clks(
 	struct venus_hfi_device *device);
+static void venus_hfi_flush_debug_queue(
+	struct venus_hfi_device *device, u8 *packet);
 
 static inline void venus_hfi_set_state(struct venus_hfi_device *device,
 		enum venus_hfi_state state)
@@ -139,12 +141,17 @@ static void venus_hfi_sim_modify_cmd_packet(u8 *packet,
 
 	fw_bias = device->hal_data->firmware_base;
 	sys_init = (struct hfi_cmd_sys_session_init_packet *)packet;
-	if (&device->session_lock) {
-		mutex_lock(&device->session_lock);
-		session = hfi_process_get_session(
-				&device->sess_head, sys_init->session_id);
-		mutex_unlock(&device->session_lock);
-	}
+
+	/* Ideally we should acquire device->session_lock. If we acquire
+	 * we may go to deadlock with inst->*_lock between two threads.
+	 * Ex : in the forward path we acquire inst->internalbufs.lock and
+	 * session_lock and in the reverse path, we acquire session_lock and
+	 * internalbufs.lock. So this may introduce deadlock. So we are not
+	 * doing that. On virtio it is less likely to run two sessions
+	 * concurrently. So it should be fine */
+
+	session = hfi_process_get_session(
+			&device->sess_head, sys_init->session_id);
 	if (!session) {
 		dprintk(VIDC_DBG, "%s :Invalid session id : %x\n",
 				__func__, sys_init->session_id);
@@ -856,8 +863,60 @@ static bool venus_hfi_is_session_supported(unsigned long sessions_supported,
 	return same_codec && same_session_type;
 }
 
-static int venus_hfi_vote_buses(void *dev, struct vidc_bus_vote_data *data,
-		int num_data, int requested_level)
+static int venus_hfi_vote_bus(struct bus_info *bus, unsigned int bus_vector)
+{
+	int rc = msm_bus_scale_client_update_request(bus->priv, bus_vector);
+	if (!rc) {
+		dprintk(VIDC_PROF, "%s bus %s (%s) to vector %d\n",
+				bus_vector ? "Voting" : "Unvoting",
+				bus->pdata->name,
+				bus->passive ? "passive" : "active",
+				bus_vector);
+	}
+
+	return rc;
+}
+
+static int venus_hfi_vote_passive_buses(void *dev,
+		struct vidc_bus_vote_data *data, int num_data)
+{
+	struct venus_hfi_device *device = dev;
+	struct bus_info *bus = NULL;
+	int rc = 0;
+
+	/*
+	 * Neither of these parameters are used (or will be useful in future).
+	 * Just keeping these so that the API is consistent with _vote_active\
+	 * _buses().
+	 */
+	(void)data;
+	(void)num_data;
+
+	venus_hfi_for_each_bus(device, bus) {
+		/* Reject active buses, as those are driven by instance load */
+		if (!bus->passive)
+			continue;
+
+		/*
+		 * XXX: Should probably check *_is_session_supported() prior
+		 * to voting but probably overkill at this point.  So skip the
+		 * check for now.
+		 */
+		rc = venus_hfi_vote_bus(bus, 1);
+		if (rc) {
+			dprintk(VIDC_ERR,
+					"Failed voting for passive bus %s: %d\n",
+					bus->pdata->name, rc);
+			goto vote_fail;
+		}
+	}
+
+vote_fail:
+	return rc;
+}
+
+static int venus_hfi_vote_active_buses(void *dev,
+		struct vidc_bus_vote_data *data, int num_data)
 {
 	struct {
 		struct bus_info *bus;
@@ -926,6 +985,10 @@ static int venus_hfi_vote_buses(void *dev, struct vidc_bus_vote_data *data,
 		struct bus_info *bus = aggregate_load_table[i].bus;
 		int load = aggregate_load_table[i].load;
 
+		/* Passive buses aren't meant to be scaled by load */
+		if (bus->passive)
+			continue;
+
 		/* Let's avoid voting for ocmem if allocation failed.
 		 * There's no clean way presently to check which buses are
 		 * associated with ocmem. So do a crude check for the bus name,
@@ -938,28 +1001,13 @@ static int venus_hfi_vote_buses(void *dev, struct vidc_bus_vote_data *data,
 		}
 
 		bus_vector = venus_hfi_get_bus_vector(device, bus, load);
-		/*
-		 * Annoying little hack here: if the bus vector for ocmem is 0,
-		 * we end up unvoting for ocmem bandwidth. This ends up
-		 * resetting the ocmem core on some targets, due to some ocmem
-		 * clock being tied to the virtual ocmem noc clk. As a result,
-		 * just lower our ocmem vote to the lowest level.
-		*/
-		if (strnstr(bus->pdata->name, "ocmem",
-					strlen(bus->pdata->name)) ||
-					device->res->minimum_vote)
-			bus_vector = bus_vector ?: 1;
-
-		rc = msm_bus_scale_client_update_request(bus->priv, bus_vector);
+		
+		rc = venus_hfi_vote_bus(bus, bus_vector);
 		if (rc) {
 			dprintk(VIDC_ERR, "Failed voting for bus %s @ %d: %d\n",
 					bus->pdata->name, bus_vector, rc);
 			/* Ignore error and try to vote for the rest */
 			rc = 0;
-		} else {
-			dprintk(VIDC_PROF,
-					"Voting bus %s to vector %d with load %d\n",
-					bus->pdata->name, bus_vector, load);
 		}
 	}
 
@@ -976,34 +1024,60 @@ err_no_mem:
 
 }
 
-static int venus_hfi_unvote_buses(void *dev)
+static int venus_hfi_unvote_buses_of_type(struct venus_hfi_device *device,
+		bool only_passive)
 {
-	struct venus_hfi_device *device = dev;
 	struct bus_info *bus = NULL;
 	int rc = 0;
 
-	if (!device) {
-		dprintk(VIDC_ERR, "%s invalid parameters\n", __func__);
-		return -EINVAL;
-	}
-
 	venus_hfi_for_each_bus(device, bus) {
-		int bus_vector = 0;
 		int local_rc = 0;
 
-		bus_vector = venus_hfi_get_bus_vector(device, bus, 0);
-		local_rc = msm_bus_scale_client_update_request(bus->priv,
-			bus_vector);
+		if (bus->passive != only_passive)
+			continue;
+
+		local_rc = venus_hfi_vote_bus(bus, 0);
 		if (local_rc) {
 			rc = rc ?: local_rc;
-			dprintk(VIDC_ERR, "Failed unvoting bus %s @ %d: %d\n",
-					bus->pdata->name, bus_vector, rc);
-		} else {
-			dprintk(VIDC_PROF, "Unvoting bus %s to vector %d\n",
-					bus->pdata->name, bus_vector);
+			dprintk(VIDC_ERR,
+					"Failed unvoting passive bus %s: %d\n",
+					bus->pdata->name, rc);
 		}
 	}
 
+	return rc;
+}
+
+static int venus_hfi_unvote_passive_buses(void *dev)
+{
+	return venus_hfi_unvote_buses_of_type(dev, true);
+}
+
+static int venus_hfi_unvote_active_buses(void *dev)
+{
+	return venus_hfi_unvote_buses_of_type(dev, false);
+}
+
+static int venus_hfi_unvote_buses(void *dev)
+{
+	venus_hfi_unvote_active_buses(dev);
+	venus_hfi_unvote_passive_buses(dev);
+
+	return 0;
+}
+
+static int venus_hfi_vote_buses(void *dev,
+		struct vidc_bus_vote_data *data, int num_data)
+{
+	int rc = venus_hfi_vote_passive_buses(dev, data, num_data);
+	rc = rc ?: venus_hfi_vote_active_buses(dev, data, num_data);
+
+	if (rc)
+		goto fail_vote;
+
+	return 0;
+fail_vote:
+	venus_hfi_unvote_buses(dev);
 	return rc;
 }
 
@@ -1235,7 +1309,7 @@ static int __alloc_set_ocmem(struct venus_hfi_device *device, bool locked)
 	}
 
 	rc = venus_hfi_vote_buses(device, device->bus_load.vote_data,
-			device->bus_load.vote_data_count, 0);
+			device->bus_load.vote_data_count);
 	if (rc) {
 		dprintk(VIDC_ERR,
 				"Failed to scale buses after setting ocmem: %d\n",
@@ -1435,9 +1509,14 @@ static int venus_hfi_halt_axi(struct venus_hfi_device *device)
 		dprintk(VIDC_ERR, "Invalid input: %p\n", device);
 		return -EINVAL;
 	}
-	if (venus_hfi_power_enable(device)) {
-		dprintk(VIDC_ERR, "%s: Failed to enable power\n", __func__);
-		return 0;
+	/*
+	 * Driver needs to make sure that clocks are enabled to read Venus AXI
+	 * registers. If not skip AXI HALT.
+	 */
+	if (device->clk_state != ENABLED_PREPARED) {
+		dprintk(VIDC_WARN,
+			"Clocks are OFF, skipping AXI HALT\n");
+		return -EINVAL;
 	}
 
 	/* Halt AXI and AXI OCMEM VBIF Access */
@@ -1467,6 +1546,12 @@ static inline int venus_hfi_power_off(struct venus_hfi_device *device)
 	}
 	if (!device->power_enabled) {
 		dprintk(VIDC_DBG, "Power already disabled\n");
+		return 0;
+	}
+
+	rc = venus_hfi_halt_axi(device);
+	if (rc) {
+		dprintk(VIDC_WARN, "Failed to halt AXI\n");
 		return 0;
 	}
 
@@ -1531,11 +1616,12 @@ static inline int venus_hfi_power_on(struct venus_hfi_device *device)
 
 	dprintk(VIDC_DBG, "Resuming from power collapse\n");
 	rc = venus_hfi_vote_buses(device, device->bus_load.vote_data,
-			device->bus_load.vote_data_count, 0);
+			device->bus_load.vote_data_count);
 	if (rc) {
 		dprintk(VIDC_ERR, "Failed to scale buses\n");
 		goto err_vote_buses;
 	}
+
 	/* At this point driver has the control for all regulators */
 	rc = venus_hfi_enable_regulators(device);
 	if (rc) {
@@ -2230,6 +2316,8 @@ static int venus_hfi_core_init(void *device)
 	struct hfi_cmd_sys_init_packet pkt;
 	struct hfi_cmd_sys_get_property_packet version_pkt;
 	int rc = 0;
+	struct list_head *ptr, *next;
+	struct hal_session *session = NULL;
 	struct venus_hfi_device *dev;
 
 	if (device) {
@@ -2242,7 +2330,20 @@ static int venus_hfi_core_init(void *device)
 	venus_hfi_set_state(dev, VENUS_STATE_INIT);
 
 	dev->intr_status = 0;
+
+	mutex_lock(&dev->session_lock);
+	list_for_each_safe(ptr, next, &dev->sess_head) {
+		/* This means that session list is not empty. Kick stale
+		 * sessions out of our valid instance list, but keep the
+		 * list_head inited so that list_del (in the future, called
+		 * by session_clean()) will be valid. When client doesn't close
+		 * them, then it is a genuine leak which driver can't fix. */
+		session = list_entry(ptr, struct hal_session, list);
+		list_del_init(&session->list);
+	}
 	INIT_LIST_HEAD(&dev->sess_head);
+	mutex_unlock(&dev->session_lock);
+
 	venus_hfi_set_registers(dev);
 
 	if (!dev->hal_client) {
@@ -2518,6 +2619,26 @@ static void venus_hfi_set_default_sys_properties(
 		dprintk(VIDC_WARN, "Setting h/w power collapse ON failed\n");
 }
 
+static int venus_hfi_session_clean(void *session)
+{
+	struct hal_session *sess_close;
+	struct venus_hfi_device *device;
+	if (!session) {
+		dprintk(VIDC_ERR, "Invalid Params %s\n", __func__);
+		return -EINVAL;
+	}
+	sess_close = session;
+	device = sess_close->device;
+	venus_hfi_flush_debug_queue(sess_close->device, NULL);
+	dprintk(VIDC_DBG, "deleted the session: 0x%p\n",
+			sess_close);
+	mutex_lock(&device->session_lock);
+	list_del(&sess_close->list);
+	kfree(sess_close);
+	mutex_unlock(&device->session_lock);
+	return 0;
+}
+
 static void *venus_hfi_session_init(void *device, void *session_id,
 		enum hal_domain session_type, enum hal_video_codec codec_type)
 {
@@ -2562,7 +2683,7 @@ static void *venus_hfi_session_init(void *device, void *session_id,
 	return (void *) new_session;
 
 err_session_init_fail:
-	kfree(new_session);
+	venus_hfi_session_clean(new_session);
 	return NULL;
 }
 
@@ -2612,27 +2733,10 @@ static int venus_hfi_session_end(void *session)
 
 static int venus_hfi_session_abort(void *session)
 {
+	venus_hfi_flush_debug_queue(
+		((struct hal_session *)session)->device, NULL);
 	return venus_hfi_send_session_cmd(session,
 		HFI_CMD_SYS_SESSION_ABORT);
-}
-
-static int venus_hfi_session_clean(void *session)
-{
-	struct hal_session *sess_close;
-	if (!session) {
-		dprintk(VIDC_ERR, "Invalid Params %s\n", __func__);
-		return -EINVAL;
-	}
-	sess_close = session;
-	dprintk(VIDC_DBG, "deleted the session: 0x%p\n",
-			sess_close);
-	mutex_lock(&((struct venus_hfi_device *)
-			sess_close->device)->session_lock);
-	list_del(&sess_close->list);
-	mutex_unlock(&((struct venus_hfi_device *)
-			sess_close->device)->session_lock);
-	kfree(sess_close);
-	return 0;
 }
 
 static int venus_hfi_session_set_buffers(void *sess,
@@ -3005,6 +3109,7 @@ static int venus_hfi_prepare_pc(struct venus_hfi_device *device)
 		dprintk(VIDC_ERR,
 				"Wait interrupted or timeout for PC_PREP_DONE: %d\n",
 				rc);
+		venus_hfi_flush_debug_queue(device, NULL);
 		rc = -EIO;
 		goto err_pc_prep;
 	}
@@ -3098,13 +3203,12 @@ static void venus_hfi_pm_hndlr(struct work_struct *work)
 err_power_off:
 skip_power_off:
 
-	/* Reset PC_READY bit as power_off is skipped, if set by Venus */
-	ctrl_status = venus_hfi_read_register(device, VIDC_CPU_CS_SCIACMDARG0);
-	if (ctrl_status & VIDC_CPU_CS_SCIACMDARG0_HFI_CTRL_PC_READY) {
-		ctrl_status &= ~(VIDC_CPU_CS_SCIACMDARG0_HFI_CTRL_PC_READY);
-		venus_hfi_write_register(device, VIDC_CPU_CS_SCIACMDARG0,
-			ctrl_status);
-	}
+	/*
+	* When power collapse is escaped, driver no need to inform Venus.
+	* Venus is self-sufficient to come out of the power collapse at
+	* any stage. Driver can skip power collapse and continue with
+	* normal execution.
+	*/
 
 	/* Cancel pending delayed works if any */
 	cancel_delayed_work(&venus_hfi_pm_work);
@@ -3149,12 +3253,54 @@ static void venus_hfi_process_msg_event_notify(
 		}
 	}
 }
+
+static void venus_hfi_flush_debug_queue(
+	struct venus_hfi_device *device, u8 *packet)
+{
+	bool local_packet = false;
+
+	if (!device) {
+		dprintk(VIDC_ERR, "%s: Invalid params\n", __func__);
+		return;
+	}
+	if (!packet) {
+		packet = kzalloc(VIDC_IFACEQ_VAR_HUGE_PKT_SIZE, GFP_TEMPORARY);
+		if (!packet) {
+			dprintk(VIDC_ERR, "In %s() Fail to allocate mem\n",
+				__func__);
+			return;
+		}
+		local_packet = true;
+	}
+
+	while (!venus_hfi_iface_dbgq_read(device, packet)) {
+		struct hfi_msg_sys_coverage_packet *pkt =
+			(struct hfi_msg_sys_coverage_packet *) packet;
+		if (pkt->packet_type == HFI_MSG_SYS_COV) {
+			int stm_size = 0;
+			dprintk(VIDC_DBG,
+				"DbgQ pkt size:%d\n", pkt->msg_size);
+			stm_size = stm_log_inv_ts(0, 0,
+				pkt->rg_msg_data, pkt->msg_size);
+			if (stm_size == 0)
+				dprintk(VIDC_ERR,
+					"In %s, stm_log returned size of 0\n",
+					__func__);
+		} else {
+			struct hfi_msg_sys_debug_packet *pkt =
+				(struct hfi_msg_sys_debug_packet *) packet;
+			dprintk(VIDC_FW, "%s", pkt->rg_msg_data);
+		}
+	}
+	if (local_packet)
+		kfree(packet);
+}
+
 static void venus_hfi_response_handler(struct venus_hfi_device *device)
 {
 	u8 *packet = NULL;
 	u32 rc = 0;
 	struct hfi_sfr_struct *vsfr = NULL;
-	int stm_size = 0;
 
 	packet = kzalloc(VIDC_IFACEQ_VAR_HUGE_PKT_SIZE, GFP_TEMPORARY);
 	if (!packet) {
@@ -3198,25 +3344,7 @@ static void venus_hfi_response_handler(struct venus_hfi_device *device)
 						"Failed to allocate OCMEM. Performance will be impacted\n");
 			}
 		}
-		while (!venus_hfi_iface_dbgq_read(device, packet)) {
-			struct hfi_msg_sys_coverage_packet *pkt =
-				(struct hfi_msg_sys_coverage_packet *) packet;
-			if (pkt->packet_type == HFI_MSG_SYS_COV) {
-				dprintk(VIDC_DBG,
-					"DbgQ pkt size:%d\n", pkt->msg_size);
-				stm_size = stm_log_inv_ts(0, 0,
-					pkt->rg_msg_data, pkt->msg_size);
-				if (stm_size == 0)
-					dprintk(VIDC_ERR,
-						"In %s, stm_log returned size of 0\n",
-						__func__);
-			} else {
-				struct hfi_msg_sys_debug_packet *pkt =
-					(struct hfi_msg_sys_debug_packet *)
-					packet;
-				dprintk(VIDC_FW, "%s", pkt->rg_msg_data);
-			}
-		}
+		venus_hfi_flush_debug_queue(device, packet);
 		switch (rc) {
 		case HFI_MSG_SYS_PC_PREP_DONE:
 			dprintk(VIDC_DBG,
@@ -3576,6 +3704,17 @@ static int venus_hfi_init_bus(struct venus_hfi_device *device)
 				name);
 			rc = -EINVAL;
 			goto err_init_bus;
+		} else if (bus->passive && bus->pdata->num_usecases != 2) {
+			/*
+			 * Passive buses can only be "turned on" and "turned
+			 * off".  We never scale them based on hardware load,
+			 * and are usually used for the purposes of holding
+			 * certain clocks high (in case we can't control these
+			 * clocks directly).
+			 */
+			rc = -EINVAL;
+			dprintk(VIDC_ERR,
+					"Passive buses expected to have only 2 vectors\n");
 		}
 
 		bus->priv = msm_bus_scale_register_client(bus->pdata);
@@ -3877,6 +4016,15 @@ static int venus_hfi_load_fw(void *dev)
 
 	trace_msm_v4l2_vidc_fw_load_start("msm_v4l2_vidc venus_fw load start");
 
+	rc = venus_hfi_vote_buses(device, device->bus_load.vote_data,
+			device->bus_load.vote_data_count);
+	if (rc) {
+		dprintk(VIDC_ERR,
+				"Failed to vote buses when loading firmware: %d\n",
+				rc);
+		goto fail_vote_buses;
+	}
+
 	rc = venus_hfi_enable_regulators(device);
 	if (rc) {
 		dprintk(VIDC_ERR, "%s : Failed to enable GDSC, Err = %d\n",
@@ -3938,6 +4086,8 @@ fail_iommu_attach:
 fail_enable_clks:
 	venus_hfi_disable_regulators(device);
 fail_enable_gdsc:
+	venus_hfi_unvote_buses(device);
+fail_vote_buses:
 	trace_msm_v4l2_vidc_fw_load_end("msm_v4l2_vidc venus_fw load end");
 	return rc;
 }
@@ -3956,15 +4106,16 @@ static void venus_hfi_unload_fw(void *dev)
 		flush_workqueue(device->venus_pm_workq);
 		subsystem_put(device->resources.fw.cookie);
 		venus_hfi_interface_queues_release(dev);
-		/* IOMMU operations need to be done before AXI halt.*/
-		venus_hfi_iommu_detach(device);
 		/* Halt the AXI to make sure there are no pending transactions.
 		 * Clocks should be unprepared after making sure axi is halted.
 		 */
 		if (venus_hfi_halt_axi(device))
 			dprintk(VIDC_WARN, "Failed to halt AXI\n");
+		/* Detach IOMMU only when AXI is halted */
+		venus_hfi_iommu_detach(device);
 		venus_hfi_disable_unprepare_clks(device);
 		venus_hfi_disable_regulators(device);
+		venus_hfi_unvote_buses(device);
 		device->power_enabled = false;
 		device->resources.fw.cookie = NULL;
 	}
@@ -3989,17 +4140,14 @@ static int venus_hfi_resurrect_fw(void *dev)
 	}
 
 	dprintk(VIDC_ERR, "praying for firmware resurrection\n");
-
 	venus_hfi_unload_fw(device);
 
-
 	rc = venus_hfi_vote_buses(device, device->bus_load.vote_data,
-			device->bus_load.vote_data_count, 0);
+			device->bus_load.vote_data_count);
 	if (rc) {
 		dprintk(VIDC_ERR, "Failed to scale buses\n");
 		goto exit;
 	}
-
 
 	rc = venus_hfi_load_fw(device);
 	if (rc) {
@@ -4123,6 +4271,7 @@ static void *venus_hfi_add_device(u32 device_id,
 		INIT_LIST_HEAD(&hal_ctxt.dev_head);
 
 	INIT_LIST_HEAD(&hdevice->list);
+	INIT_LIST_HEAD(&hdevice->sess_head);
 	list_add_tail(&hdevice->list, &hal_ctxt.dev_head);
 	hal_ctxt.dev_count++;
 
@@ -4216,8 +4365,8 @@ static void venus_init_hfi_callbacks(struct hfi_device *hdev)
 	hdev->session_set_property = venus_hfi_session_set_property;
 	hdev->session_get_property = venus_hfi_session_get_property;
 	hdev->scale_clocks = venus_hfi_scale_clocks;
-	hdev->vote_bus = venus_hfi_vote_buses;
-	hdev->unvote_bus = venus_hfi_unvote_buses;
+	hdev->vote_bus = venus_hfi_vote_active_buses;
+	hdev->unvote_bus = venus_hfi_unvote_active_buses;
 	hdev->iommu_get_domain_partition = venus_hfi_iommu_get_domain_partition;
 	hdev->load_fw = venus_hfi_load_fw;
 	hdev->unload_fw = venus_hfi_unload_fw;

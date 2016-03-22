@@ -197,39 +197,10 @@ static int msm_compr_set_volume(struct snd_compr_stream *cstream,
 				 __func__, prtd->compr_passthr);
 			return rc;
 		}
-		if (volume_l != volume_r) {
-			pr_debug("%s: call q6asm_set_lrgain\n", __func__);
-			rc = q6asm_set_lrgain(prtd->audio_client,
-						volume_l, volume_r);
-			if (rc < 0) {
-				pr_err("%s: set lrgain command failed rc=%d\n",
-				__func__, rc);
-				return rc;
-			}
-			/*
-			 * set master gain to unity so that only lr gain
-			 * is effective
-			 */
-			rc = q6asm_set_volume(prtd->audio_client,
-						COMPRESSED_LR_VOL_MAX_STEPS);
-		} else {
-			pr_debug("%s: call q6asm_set_volume\n", __func__);
-			/*
-			 * set left and right channel gain to unity so that
-			 * only master gain is effective
-			 */
-			rc = q6asm_set_lrgain(prtd->audio_client,
-						COMPRESSED_LR_VOL_MAX_STEPS,
-						COMPRESSED_LR_VOL_MAX_STEPS);
-			if (rc < 0) {
-				pr_err("%s: set lrgain command failed rc=%d\n",
-				__func__, rc);
-				return rc;
-			}
-			rc = q6asm_set_volume(prtd->audio_client, volume_l);
-		}
+		pr_debug("%s: call q6asm_set_lrgain\n", __func__);
+		rc = q6asm_set_lrgain(prtd->audio_client, volume_l, volume_r);
 		if (rc < 0) {
-			pr_err("%s: Send Volume command failed rc=%d\n",
+			pr_err("%s: Send LR gain command failed rc=%d\n",
 				__func__, rc);
 		} else {
 			pr_debug("%s: now calling msm_dts_eagle_set_volume\n",
@@ -546,6 +517,7 @@ static void compr_event_handler(uint32_t opcode,
 		snd_compr_fragment_elapsed(cstream);
 		prtd->copied_total = prtd->bytes_received;
 		atomic_set(&prtd->error, 1);
+		wake_up(&prtd->drain_wait);
 		spin_unlock_irqrestore(&prtd->lock, flags);
 		break;
 	default:
@@ -737,10 +709,6 @@ static int msm_compr_init_pp_params(struct snd_compr_stream *cstream,
 			pr_err("%s: Send SoftVolume2 Param failed ret=%d\n",
 			__func__, ret);
 
-		ret = msm_compr_set_volume(cstream, 0, 0);
-		if (ret < 0)
-			pr_err("%s : Set Volume failed : %d", __func__, ret);
-
 	case ASM_STREAM_POSTPROC_TOPO_ID_DTS_HPX:
 
 		msm_dts_eagle_init_pre(ac);
@@ -752,10 +720,6 @@ static int msm_compr_init_pp_params(struct snd_compr_stream *cstream,
 		if (ret < 0)
 			pr_err("%s: Send SoftVolume Param failed ret=%d\n",
 			__func__, ret);
-
-		ret = msm_compr_set_volume(cstream, 0, 0);
-		if (ret < 0)
-			pr_err("%s : Set Volume failed : %d", __func__, ret);
 
 		break;
 	}
@@ -829,8 +793,6 @@ static int msm_compr_configure_dsp(struct snd_compr_stream *cstream)
 			pr_err("%s: stream reg failed:%d\n", __func__, ret);
 			return ret;
 		}
-
-		msm_compr_init_pp_params(cstream, ac);
 	}
 
 	ret = msm_compr_set_volume(cstream, 0, 0);
@@ -1257,13 +1219,18 @@ static int msm_compr_drain_buffer(struct msm_compr_audio *prtd,
 	rc = wait_event_interruptible(prtd->drain_wait,
 					prtd->drain_ready ||
 					prtd->cmd_interrupt ||
-					atomic_read(&prtd->xrun));
+					atomic_read(&prtd->xrun) ||
+					atomic_read(&prtd->error));
 	pr_debug("%s: out of buffer drain wait with ret %d\n", __func__, rc);
 	spin_lock_irqsave(&prtd->lock, *flags);
 	if (prtd->cmd_interrupt) {
 		pr_debug("%s: buffer drain interrupted by flush)\n", __func__);
 		rc = -EINTR;
 		prtd->cmd_interrupt = 0;
+	}
+	if (atomic_read(&prtd->error)) {
+		pr_err("%s: Got RESET EVENTS notification, return\n", __func__);
+		rc = -ENETRESET;
 	}
 	return rc;
 }
@@ -1341,17 +1308,20 @@ static int msm_compr_trigger(struct snd_compr_stream *cstream, int cmd)
 	case SNDRV_PCM_TRIGGER_START:
 		pr_debug("%s: SNDRV_PCM_TRIGGER_START\n", __func__);
 		atomic_set(&prtd->start, 1);
-		q6asm_run_nowait(prtd->audio_client, 0, 0, 0);
 
-		msm_compr_set_volume(cstream, 0, 0);
-		if (rc)
-			pr_err("%s : Set Volume (0,0) failed : %d\n",
-				__func__, rc);
-
-		msm_compr_set_volume(cstream, volume[0], volume[1]);
+		/* set volume for the stream before RUN */
+		rc = msm_compr_set_volume(cstream, volume[0], volume[1]);
 		if (rc)
 			pr_err("%s : Set Volume failed : %d\n",
 				__func__, rc);
+
+		rc = msm_compr_init_pp_params(cstream, ac);
+		if (rc)
+			pr_err("%s : init PP params failed : %d\n",
+				__func__, rc);
+
+		/* issue RUN command for the stream */
+		q6asm_run_nowait(prtd->audio_client, 0, 0, 0);
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 		spin_lock_irqsave(&prtd->lock, flags);
@@ -1444,7 +1414,8 @@ static int msm_compr_trigger(struct snd_compr_stream *cstream, int cmd)
 				__func__);
 			rc = msm_compr_drain_buffer(prtd, &flags);
 			if (rc || !atomic_read(&prtd->start)) {
-				rc = -EINTR;
+				if (rc != -ENETRESET)
+					rc = -EINTR;
 				spin_unlock_irqrestore(&prtd->lock, flags);
 				break;
 			}

@@ -43,3 +43,23 @@ config FB_MSM_MDSS_MDP3
 	---help---
 	The MDP3 provides support for an older version display controller
 	included in latest display sub-system, known as MDSS.
+
+# cadiz +++++
+config BACKLIGHT_RT8555
+	tristate "RT8555 Backlight Driver"
+	default y
+	help
+	Say y to enable
+
+config BACKLIGHT_LP85571
+	tristate "LP85571 Backlight Driver"
+	default y
+	help
+	Say y to enable
+
+config SONY_CADIZ
+	tristate "SONY CADIZ Driver"
+	default y
+	help
+	Say y to enable
+# cadiz -----

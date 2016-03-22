@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -33,6 +33,18 @@
 #define NT35596_MAX_ERR_CNT 2
 
 #define MIN_REFRESH_RATE 30
+
+// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+extern int is_cadiz_support(void);
+
+extern void lp85571_suspend(void);
+extern void lp85571_resume(void);
+extern int lp85571_support(void);
+extern void cadiz_rest_gpio(void);
+extern int lcm_id2;
+#endif
+// cadiz -----
 
 DEFINE_LED_TRIGGER(bl_led_trigger);
 
@@ -283,6 +295,9 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 	pinfo = &(ctrl_pdata->panel_data.panel_info);
 
 	if (enable) {
+		usleep_range(5000, 5000);
+		cadiz_rest_gpio();
+
 		rc = mdss_dsi_request_gpios(ctrl_pdata);
 		if (rc) {
 			pr_err("gpio request failed\n");
@@ -324,6 +339,7 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 			gpio_set_value((ctrl_pdata->disp_en_gpio), 0);
 			gpio_free(ctrl_pdata->disp_en_gpio);
 		}
+		usleep_range(5000, 5000);
 		gpio_set_value((ctrl_pdata->rst_gpio), 0);
 		gpio_free(ctrl_pdata->rst_gpio);
 		if (gpio_is_valid(ctrl_pdata->mode_gpio))
@@ -533,6 +549,13 @@ static void mdss_dsi_panel_switch_mode(struct mdss_panel_data *pdata,
 	return;
 }
 
+// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+extern int cadiz_i2c_reg_write(u16 reg, u8 value);
+#endif
+// cadiz -----
+
+static int bl_prev_level = 0;
 static void mdss_dsi_panel_bl_ctrl(struct mdss_panel_data *pdata,
 							u32 bl_level)
 {
@@ -587,11 +610,25 @@ static void mdss_dsi_panel_bl_ctrl(struct mdss_panel_data *pdata,
 				mdss_dsi_panel_bklt_dcs(sctrl, bl_level);
 		}
 		break;
+	// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+	case BL_CADIZ:
+		if(is_cadiz_support())
+			cadiz_i2c_reg_write(0x0C28,bl_level);
+		break;
+#endif
+	// cadiz -----
 	default:
 		pr_err("%s: Unknown bl_ctrl configuration\n",
 			__func__);
 		break;
 	}
+
+	//BSP++
+	if(!!bl_prev_level^!!bl_level)
+		printk("[DISPLAY] brightness level : %d > %d\n", bl_prev_level, bl_level);
+	bl_prev_level = bl_level;
+	//BSP--
 }
 
 static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
@@ -615,12 +652,25 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 			goto end;
 	}
 
-	if (ctrl->on_cmds.cmd_cnt)
+	if (ctrl->on_cmds.cmd_cnt) {
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+		if(lcm_id2) {
+			usleep(200000);
+		}
+#endif
 		mdss_dsi_panel_cmds_send(ctrl, &ctrl->on_cmds);
+	}
 
+	// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+	if(lp85571_support()){
+		lp85571_resume();
+	}
+#endif
+	// cadiz -----
 end:
 	pinfo->blank_state = MDSS_PANEL_BLANK_UNBLANK;
-	pr_debug("%s:-\n", __func__);
+	printk("[DISPLAY] %s:-\n", __func__);
 	return 0;
 }
 
@@ -640,6 +690,14 @@ static int mdss_dsi_panel_off(struct mdss_panel_data *pdata)
 
 	pr_debug("%s: ctrl=%p ndx=%d\n", __func__, ctrl, ctrl->ndx);
 
+	// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+	if(lp85571_support()){
+		lp85571_suspend();
+	}
+#endif
+	// cadiz -----
+
 	if (pinfo->dcs_cmd_by_left) {
 		if (ctrl->ndx != DSI_CTRL_LEFT)
 			goto end;
@@ -650,7 +708,7 @@ static int mdss_dsi_panel_off(struct mdss_panel_data *pdata)
 
 end:
 	pinfo->blank_state = MDSS_PANEL_BLANK_BLANK;
-	pr_debug("%s:-\n", __func__);
+	printk("[DISPLAY] %s:-\n", __func__);
 	return 0;
 }
 
@@ -1462,6 +1520,14 @@ static int mdss_panel_parse_dt(struct device_node *np,
 			pr_debug("%s: Configured DCS_CMD bklt ctrl\n",
 								__func__);
 		}
+		// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+		else if (!strncmp(data, "bl_ctrl_cadiz", 13) && is_cadiz_support()) {
+			ctrl_pdata->bklt_ctrl = BL_CADIZ;
+			pr_debug("%s: Configured BL_CADIZ bklt ctrl\n", __func__);
+		}
+#endif
+		// cadiz -----
 	}
 	rc = of_property_read_u32(np, "qcom,mdss-brightness-max-level", &tmp);
 	pinfo->brightness_max = (!rc ? tmp : MDSS_MAX_BL_BRIGHTNESS);
@@ -1687,6 +1753,13 @@ int mdss_dsi_panel_init(struct device_node *node,
 		return rc;
 	}
 
+	// cadiz +++++
+#if defined(ASUS_PROJECT_Z380KL_DISPLAY)
+	if(is_cadiz_support())
+		pinfo->mipi.force_clk_lane_hs = 1;
+#endif
+	// cadiz -----
+
 	if (!cmd_cfg_cont_splash)
 		pinfo->cont_splash_enabled = false;
 	pr_info("%s: Continuous splash %s\n", __func__,
@@ -1694,6 +1767,7 @@ int mdss_dsi_panel_init(struct device_node *node,
 
 	pinfo->dynamic_switch_pending = false;
 	pinfo->is_lpm_mode = false;
+	pinfo->esd_rdy = false;
 
 	ctrl_pdata->on = mdss_dsi_panel_on;
 	ctrl_pdata->off = mdss_dsi_panel_off;

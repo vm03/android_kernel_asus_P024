@@ -1050,6 +1050,94 @@ static const struct file_operations proc_oom_adj_operations = {
 	.llseek		= generic_file_llseek,
 };
 
+static ssize_t oom_qos_read(struct file *file, char __user *buf, size_t count,
+                            loff_t *ppos)
+{
+        struct task_struct *task = get_proc_task(file_inode(file));
+        char buffer[PROC_NUMBUF];
+        int oom_qos = OOM_ADJUST_MAX;
+        unsigned long flags;
+        size_t len;
+
+        if (!task)
+                return -ESRCH;
+        if (lock_task_sighand(task, &flags)) {
+                oom_qos = task->signal->oom_qos;
+        }
+        unlock_task_sighand(task, &flags);
+        put_task_struct(task);
+        len = snprintf(buffer, sizeof(buffer), "%d\n", oom_qos);
+        return simple_read_from_buffer(buf, count, ppos, buffer, len);
+}
+
+static ssize_t oom_qos_write(struct file *file, const char __user *buf,
+                             size_t count, loff_t *ppos)
+{
+        struct task_struct *task;
+        char buffer[PROC_NUMBUF];
+        int oom_qos = 0;
+        unsigned long flags;
+        int err;
+
+        memset(buffer, 0, sizeof(buffer));
+        if (count > sizeof(buffer) - 1)
+                count = sizeof(buffer) - 1;
+        if (copy_from_user(buffer, buf, count)) {
+                err = -EFAULT;
+                goto out;
+        }
+
+        err = kstrtoint(strstrip(buffer), 0, &oom_qos);
+        if (err)
+                goto out;
+
+        task = get_proc_task(file_inode(file));
+        if (!task) {
+                err = -ESRCH;
+                goto out;
+        }
+
+        task_lock(task);
+        if (!task->mm) {
+                err = -EINVAL;
+                goto err_task_lock;
+        }
+
+        if (!lock_task_sighand(task, &flags)) {
+                err = -ESRCH;
+                goto err_task_lock;
+        }
+
+        if (!capable(CAP_SYS_RESOURCE)) {
+                err = -EACCES;
+                goto err_sighand;
+        }
+
+
+        pr_debug("%s (%d): /proc/%d/oom_qos -> %d\n",
+                current->comm, task_pid_nr(current), task_pid_nr(task),
+                oom_qos);
+
+        task->signal->oom_qos = oom_qos;
+err_sighand:
+        unlock_task_sighand(task, &flags);
+err_task_lock:
+        task_unlock(task);
+        put_task_struct(task);
+out:
+        return err < 0 ? err : count;
+}
+
+static const struct file_operations proc_oom_qos_operations = {
+        .read		= oom_qos_read,
+        .write		= oom_qos_write,
+        .llseek		= generic_file_llseek,
+};
+
+static const struct inode_operations proc_oom_qos_inode_operations = {
+       .permission     = oom_adjust_permission,
+};
+
 static ssize_t oom_score_adj_read(struct file *file, char __user *buf,
 					size_t count, loff_t *ppos)
 {
@@ -2747,6 +2835,7 @@ static const struct pid_entry tgid_base_stuff[] = {
 	INF("oom_score",  S_IRUGO, proc_oom_score),
 	ANDROID("oom_adj", S_IRUGO|S_IWUSR, oom_adj),
 	REG("oom_score_adj", S_IRUGO|S_IWUSR, proc_oom_score_adj_operations),
+    ANDROID("oom_qos", S_IRUGO|S_IWUSR, oom_qos),
 #ifdef CONFIG_AUDITSYSCALL
 	REG("loginuid",   S_IWUSR|S_IRUGO, proc_loginuid_operations),
 	REG("sessionid",  S_IRUGO, proc_sessionid_operations),
@@ -3103,6 +3192,7 @@ static const struct pid_entry tid_base_stuff[] = {
 	INF("oom_score", S_IRUGO, proc_oom_score),
 	REG("oom_adj",   S_IRUGO|S_IWUSR, proc_oom_adj_operations),
 	REG("oom_score_adj", S_IRUGO|S_IWUSR, proc_oom_score_adj_operations),
+    REG("oom_qos", S_IRUGO|S_IWUSR, proc_oom_qos_operations),
 #ifdef CONFIG_AUDITSYSCALL
 	REG("loginuid",  S_IWUSR|S_IRUGO, proc_loginuid_operations),
 	REG("sessionid",  S_IRUGO, proc_sessionid_operations),

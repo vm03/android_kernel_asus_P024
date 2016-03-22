@@ -21,33 +21,6 @@
 };
 
 &soc {
-	i2c@78b9000 { /* BLSP1 QUP5 */
-		synaptics@20 {
-			compatible = "synaptics,rmi4";
-			reg = <0x20>;
-			interrupt-parent = <&msm_gpio>;
-			interrupts = <13 0x2008>;
-			vdd-supply = <&pm8916_l17>;
-			vcc_i2c-supply = <&pm8916_l6>;
-			/* pins used by touchscreen */
-			pinctrl-names = "pmx_ts_active","pmx_ts_suspend","pmx_ts_suspend";
-			pinctrl-0 = <&ts_int_active &ts_reset_active>;
-			pinctrl-1 = <&ts_int_suspend &ts_reset_suspend>;
-			pinctrl-2 = <&ts_release>;
-			synaptics,display-coords = <0 0 1079 1919>;
-			synaptics,panel-coords = <0 0 1079 2084>;
-			synaptics,irq-gpio = <&msm_gpio 13 0x2008>;
-			synaptics,reset-gpio = <&msm_gpio 12 0x0>;
-			synaptics,i2c-pull-up;
-			synaptics,power-down;
-			synaptics,disable-gpios;
-			/* Underlying clocks used by secure touch */
-			clocks = <&clock_gcc clk_gcc_blsp1_ahb_clk>,
-			 <&clock_gcc clk_gcc_blsp1_qup5_i2c_apps_clk>;
-			clock-names = "iface_clk", "core_clk";
-		};
-	};
-
 	gen-vkeys {
 		compatible = "qcom,gen-vkeys";
 		label = "synaptics_rmi4_i2c";
@@ -227,6 +200,7 @@
 			debounce-interval = <15>;
 		};
 
+/* chris: disable it due to gpio 109 is used for new function
 		camera_snapshot {
 			label = "camera_snapshot";
 			gpios = <&msm_gpio 109 0x1>;
@@ -235,6 +209,7 @@
 			gpio-key,wakeup;
 			debounce-interval = <15>;
 		};
+*/
 
 		vol_up {
 			label = "volume_up";
@@ -255,6 +230,7 @@
 	vdd-supply = <&pm8916_l8>;
 	qcom,vdd-voltage-level = <2900000 2900000>;
 	qcom,vdd-current-level = <200 400000>;
+	qcom,vdd-always-on;
 
 	vdd-io-supply = <&pm8916_l5>;
 	qcom,vdd-io-always-on;
@@ -282,7 +258,7 @@
 
 	pinctrl-names = "active", "sleep";
 	pinctrl-0 = <&sdc2_clk_on &sdc2_cmd_on &sdc2_data_on &sdc2_cd_on>;
-	pinctrl-1 = <&sdc2_clk_off &sdc2_cmd_off &sdc2_data_off &sdc2_cd_off>;
+	pinctrl-1 = <&sdc2_clk_off &sdc2_cmd_off &sdc2_data_off>;
 
 	#address-cells = <0>;
 	interrupt-parent = <&sdhc_2>;

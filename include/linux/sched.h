@@ -688,6 +688,7 @@ struct signal_struct {
 	short oom_score_adj;		/* OOM kill score adjustment */
 	short oom_score_adj_min;	/* OOM kill score adjustment min value.
 					 * Only settable by CAP_SYS_RESOURCE. */
+    short oom_qos;
 
 	struct mutex cred_guard_mutex;	/* guard against foreign influences on
 					 * credential calculations
@@ -1908,7 +1909,16 @@ sched_set_cpu_cstate(int cpu, int cstate, int wakeup_energy, int wakeup_latency)
 #endif
 
 #ifdef CONFIG_SCHED_HMP
+
 extern int sched_set_boost(int enable);
+extern int sched_set_cpu_mostly_idle_load(int cpu, int mostly_idle_pct);
+extern int sched_get_cpu_mostly_idle_load(int cpu);
+extern int sched_set_cpu_mostly_idle_nr_run(int cpu, int nr_run);
+extern int sched_get_cpu_mostly_idle_nr_run(int cpu);
+extern int
+sched_set_cpu_mostly_idle_freq(int cpu, unsigned int mostly_idle_freq);
+extern unsigned int sched_get_cpu_mostly_idle_freq(int cpu);
+
 #else
 static inline int sched_set_boost(int enable)
 {

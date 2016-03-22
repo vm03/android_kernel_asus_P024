@@ -1,4 +1,4 @@
- /* Copyright (c) 2014, The Linux Foundation. All rights reserved.
+ /* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1067,7 +1067,7 @@ static void *def_msm8x16_wcd_mbhc_cal(void)
 	}
 
 #define S(X, Y) ((WCD_MBHC_CAL_PLUG_TYPE_PTR(msm8x16_wcd_cal)->X) = (Y))
-	S(v_hs_max, 1500);
+	S(v_hs_max, 1700); // joe_cheng : update HS_VREF to 1.7V for several headsets which the resistance is higher
 #undef S
 #define S(X, Y) ((WCD_MBHC_CAL_BTN_DET_PTR(msm8x16_wcd_cal)->X) = (Y))
 	S(num_btn, WCD_MBHC_DEF_BUTTONS);
@@ -1085,6 +1085,7 @@ static void *def_msm8x16_wcd_mbhc_cal(void)
 	 * all btn_low corresponds to threshold for current source
 	 * all bt_high corresponds to threshold for Micbias
 	 */
+	 /*
 	btn_low[0] = 25;
 	btn_high[0] = 25;
 	btn_low[1] = 50;
@@ -1095,7 +1096,34 @@ static void *def_msm8x16_wcd_mbhc_cal(void)
 	btn_high[3] = 112;
 	btn_low[4] = 137;
 	btn_high[4] = 137;
-
+	*/
+#if 0
+	// joe_cheng : sync 3F threshold	
+	// CS : 0.117mV, 14.09mV, 22.77mV, 43.86mV
+	// MB : 1mV, 116.73mV, 183.2mV, 336,37mV
+	btn_low[0] = 62;
+	btn_high[0] = 75;
+	btn_low[1] = 150;
+	btn_high[1] = 175;
+	btn_low[2] = 262;
+	btn_high[2] = 312;
+	btn_low[3] = 462;
+	btn_high[3] = 612;
+	btn_low[4] = 784;
+	btn_high[4] = 784;
+#endif
+#if 1// wade, no-diode
+	btn_low[0] = 125;
+	btn_high[0] = 75;
+	btn_low[1] = 200;
+	btn_high[1] = 150;
+	btn_low[2] = 275;
+	btn_high[2] = 212;
+	btn_low[3] = 325;
+	btn_high[3] = 275;
+	btn_low[4] = 787;
+	btn_high[4] = 787;
+#endif
 	return msm8x16_wcd_cal;
 }
 
@@ -1256,6 +1284,7 @@ static struct snd_soc_dai_link msm8x16_dai[] = {
 		.cpu_dai_name	= "MultiMedia1",
 		.platform_name  = "msm-pcm-dsp.0",
 		.dynamic = 1,
+		.async_ops = ASYNC_DPCM_SND_SOC_PREPARE,
 		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
 			SND_SOC_DPCM_TRIGGER_POST},
 		.codec_dai_name = "snd-soc-dummy-dai",
@@ -1427,6 +1456,7 @@ static struct snd_soc_dai_link msm8x16_dai[] = {
 		.cpu_dai_name   = "MultiMedia5",
 		.platform_name  = "msm-pcm-dsp.1",
 		.dynamic = 1,
+		.async_ops = ASYNC_DPCM_SND_SOC_PREPARE,
 		.codec_dai_name = "snd-soc-dummy-dai",
 		.codec_name = "snd-soc-dummy",
 		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
@@ -1670,6 +1700,7 @@ static struct snd_soc_dai_link msm8x16_dai[] = {
 		.codec_name     = "tombak_codec",
 		.codec_dai_name = "msm8x16_wcd_i2s_tx1",
 		.no_pcm = 1,
+		.async_ops = ASYNC_DPCM_SND_SOC_PREPARE,
 		.be_id = MSM_BACKEND_DAI_TERTIARY_MI2S_TX,
 		.be_hw_params_fixup = msm_tx_be_hw_params_fixup,
 		.ops = &msm8x16_mi2s_be_ops,
@@ -2073,7 +2104,7 @@ static int msm8x16_populate_dai_link_component_of_node(
 						"asoc-platform-names",
 						dai_link[i].platform_name);
 			if (index < 0) {
-				pr_err("%s: No match found for platform name: %s\n",
+				pr_debug("%s: No match found for platform name: %s\n",
 					__func__, dai_link[i].platform_name);
 				ret = index;
 				goto cpu_dai;

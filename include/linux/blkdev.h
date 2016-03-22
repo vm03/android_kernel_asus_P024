@@ -765,7 +765,7 @@ extern int sg_scsi_ioctl(struct request_queue *, struct gendisk *, fmode_t,
 			 struct scsi_ioctl_command __user *);
 
 extern void blk_queue_bio(struct request_queue *q, struct bio *bio);
-
+extern void blk_recalc_rq_segments(struct request *rq);
 /*
  * A queue has just exitted congestion.  Note this in the global counter of
  * congested queues, and wake up anyone who was waiting for requests to be
@@ -1533,6 +1533,7 @@ struct block_device_operations {
 	int (*getgeo)(struct block_device *, struct hd_geometry *);
 	/* this callback is with swap_lock and sometimes page table lock held */
 	void (*swap_slot_free_notify) (struct block_device *, unsigned long);
+	int (*is_media_present)(struct gendisk *disk);
 	struct module *owner;
 };
 

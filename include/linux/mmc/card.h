@@ -358,6 +358,7 @@ struct mmc_card {
  /* Skip data-timeout advertised by card */
 #define MMC_QUIRK_BROKEN_DATA_TIMEOUT	(1<<13)
 #define MMC_QUIRK_CACHE_DISABLE (1 << 14)       /* prevent cache enable */
+#define MMC_QUICK_BROKEN_DISCARD (1 << 15)   /* a dummy read will be issued preceding discard/trim command. */
 
 	unsigned int		erase_size;	/* erase size in sectors */
  	unsigned int		erase_shift;	/* if erase unit is power 2 */
@@ -399,6 +400,10 @@ struct mmc_card {
 	struct notifier_block        reboot_notify;
 	bool issue_long_pon;
 	u8 *cached_ext_csd;
+#ifdef CONFIG_MMC_PERF_PROFILING
+    unsigned int    sectors_changed;        /* numbers of changed sectors
+                                             * from uptime. */
+#endif
 };
 
 /*
