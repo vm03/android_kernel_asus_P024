@@ -39,6 +39,7 @@
 #include <linux/mm_types.h>
 #include <linux/dma-contiguous.h>
 #include <linux/dma-removed.h>
+#include <linux/delay.h>
 #include <trace/events/kmem.h>
 #include <linux/delay.h>
 

@@ -63,6 +63,7 @@ static int mdss_dsi_regulator_init(struct platform_device *pdev)
 
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
 	int i = 0;
+	int j = 0;
 
 	if (!pdev) {
 		pr_err("%s: invalid input\n", __func__);
@@ -79,11 +80,16 @@ static int mdss_dsi_regulator_init(struct platform_device *pdev)
 		rc = msm_dss_config_vreg(&pdev->dev,
 			ctrl_pdata->power_data[i].vreg_config,
 			ctrl_pdata->power_data[i].num_vreg, 1);
-		if (rc)
+		if (rc) {
 			pr_err("%s: failed to init vregs for %s\n",
 				__func__, __mdss_dsi_pm_name(i));
+			for (j = i-1; j >= 0; j--) {
+				msm_dss_config_vreg(&pdev->dev,
+				ctrl_pdata->power_data[j].vreg_config,
+				ctrl_pdata->power_data[j].num_vreg, 0);
+			}
+		}
 	}
-
 	return rc;
 }
 
@@ -207,9 +213,9 @@ error:
 	return ret;
 }
 
-static int mdss_dsi_panel_power_doze(struct mdss_panel_data *pdata, int enable)
+static int mdss_dsi_panel_power_lp(struct mdss_panel_data *pdata, int enable)
 {
-	/* Panel power control when entering/exiting doze mode */
+	/* Panel power control when entering/exiting lp mode */
 	return 0;
 }
 
@@ -246,12 +252,13 @@ static int mdss_dsi_panel_power_ctrl(struct mdss_panel_data *pdata,
 		break;
 	case MDSS_PANEL_POWER_ON:
 		if (mdss_dsi_is_panel_on_lp(pdata))
-			ret = mdss_dsi_panel_power_doze(pdata, false);
+			ret = mdss_dsi_panel_power_lp(pdata, false);
 		else
 			ret = mdss_dsi_panel_power_on(pdata);
 		break;
-	case MDSS_PANEL_POWER_DOZE:
-		ret = mdss_dsi_panel_power_doze(pdata, true);
+	case MDSS_PANEL_POWER_LP1:
+	case MDSS_PANEL_POWER_LP2:
+		ret = mdss_dsi_panel_power_lp(pdata, true);
 		break;
 	default:
 		pr_err("%s: unknown panel power state requested (%d)\n",
@@ -496,7 +503,7 @@ static int mdss_dsi_off(struct mdss_panel_data *pdata, int power_state)
 		goto end;
 	}
 
-	if (power_state != MDSS_PANEL_POWER_OFF) {
+	if (mdss_panel_is_power_on(power_state)) {
 		pr_debug("%s: dsi_off with panel always on\n", __func__);
 		goto panel_power_ctrl;
 	}
@@ -605,7 +612,15 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 	 * clocks.
 	 */
 	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_BUS_CLKS, 1);
-	if (!pdata->panel_info.ulps_suspend_enabled) {
+
+	/*
+	 * If ULPS during suspend feature is enabled, then DSI PHY was
+	 * left on during suspend. In this case, we do not need to reset/init
+	 * PHY. This would have already been done when the BUS clocks are
+	 * turned on. However, if cont splash is disabled, the first time DSI
+	 * is powered on, phy init needs to be done unconditionally.
+	 */
+	if (!pdata->panel_info.ulps_suspend_enabled || !ctrl_pdata->ulps) {
 		mdss_dsi_phy_sw_reset(ctrl_pdata);
 		mdss_dsi_phy_init(ctrl_pdata);
 		mdss_dsi_ctrl_setup(ctrl_pdata);
@@ -763,7 +778,7 @@ static int mdss_dsi_blank(struct mdss_panel_data *pdata, int power_state)
 
 	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 1);
 
-	if (power_state == MDSS_PANEL_POWER_DOZE) {
+	if (mdss_panel_is_power_on_lp(power_state)) {
 		pr_debug("%s: low power state requested\n", __func__);
 		if (ctrl_pdata->low_power_config)
 			ret = ctrl_pdata->low_power_config(pdata, true);
@@ -814,6 +829,32 @@ error:
 	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 0);
 	pr_debug("%s-:End\n", __func__);
 	return ret;
+}
+
+static int mdss_dsi_post_panel_on(struct mdss_panel_data *pdata)
+{
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+
+	if (pdata == NULL) {
+		pr_err("%s: Invalid input data\n", __func__);
+		return -EINVAL;
+	}
+
+	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
+				panel_data);
+
+	pr_debug("%s+: ctrl=%p ndx=%d\n", __func__,
+				ctrl_pdata, ctrl_pdata->ndx);
+
+	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 1);
+
+	if (ctrl_pdata->post_panel_on)
+		ctrl_pdata->post_panel_on(pdata);
+
+	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 0);
+	pr_debug("%s-:\n", __func__);
+
+	return 0;
 }
 
 int mdss_dsi_cont_splash_on(struct mdss_panel_data *pdata)
@@ -1230,6 +1271,28 @@ static void mdss_dsi_force_clock_hs(struct mdss_panel_data *pdata){
 #if defined(ASUS_PROJECT_Z380KL_DISPLAY)
 static bool first_init = true;
 #endif
+static int mdss_dsi_clk_refresh(struct mdss_panel_data *pdata)
+{
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+	int rc = 0;
+
+	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
+							panel_data);
+	rc = mdss_dsi_clk_div_config(&pdata->panel_info,
+			pdata->panel_info.mipi.frame_rate);
+	if (rc) {
+		pr_err("%s: unable to initialize the clk dividers\n",
+								__func__);
+		return rc;
+	}
+	ctrl_pdata->refresh_clk_rate = false;
+	ctrl_pdata->pclk_rate = pdata->panel_info.mipi.dsi_pclk_rate;
+	ctrl_pdata->byte_clk_rate = pdata->panel_info.clk_rate / 8;
+	pr_debug("%s ctrl_pdata->byte_clk_rate=%d ctrl_pdata->pclk_rate=%d\n",
+		__func__, ctrl_pdata->byte_clk_rate, ctrl_pdata->pclk_rate);
+	return rc;
+}
+
 static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 				  int event, void *arg)
 {
@@ -1248,6 +1311,10 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 	MDSS_XLOG(event, arg, ctrl_pdata->ndx, 0x3333);
 
 	switch (event) {
+	case MDSS_EVENT_CHECK_PARAMS:
+		pr_debug("%s:Entered Case MDSS_EVENT_CHECK_PARAMS\n", __func__);
+		ctrl_pdata->refresh_clk_rate = true;
+		break;
 	case MDSS_EVENT_LINK_READY:
 		// cadiz +++++
 #if defined(ASUS_PROJECT_Z380KL_DISPLAY)
@@ -1268,6 +1335,8 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		}
 #endif
 		// cadiz -----
+		if (ctrl_pdata->refresh_clk_rate)
+			rc = mdss_dsi_clk_refresh(pdata);
 		mdss_dsi_get_hw_revision(ctrl_pdata);
 		if (ctrl_pdata->on_cmds.link_state == DSI_LP_MODE)
 			rc = mdss_dsi_unblank(pdata);
@@ -1283,6 +1352,9 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		}
 #endif
 		// cadiz -----
+		break;
+	case MDSS_EVENT_POST_PANEL_ON:
+		rc = mdss_dsi_post_panel_on(pdata);
 		break;
 	case MDSS_EVENT_PANEL_ON:
 		ctrl_pdata->ctrl_state |= CTRL_STATE_MDP_ACTIVE;
@@ -1320,13 +1392,14 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		ctrl_pdata->ctrl_state &= ~CTRL_STATE_MDP_ACTIVE;
 		if (ctrl_pdata->off_cmds.link_state == DSI_LP_MODE)
 			rc = mdss_dsi_blank(pdata, power_state);
-		rc = mdss_dsi_off(pdata, power_state);
 		// cadiz +++++
 #if defined(ASUS_PROJECT_Z380KL_DISPLAY)
 		if(is_cadiz_support()&&!first_init)
 			cadiz_suspend();
 #endif
 		// cadiz -----
+		if (!(pdata->panel_info.mipi.always_on))
+			rc = mdss_dsi_off(pdata, power_state);
 		break;
 	case MDSS_EVENT_CONT_SPLASH_FINISH:
 		if (ctrl_pdata->off_cmds.link_state == DSI_LP_MODE)
@@ -1367,6 +1440,10 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 	case MDSS_EVENT_REGISTER_RECOVERY_HANDLER:
 		rc = mdss_dsi_register_recovery_handler(ctrl_pdata,
 			(struct mdss_intf_recovery *)arg);
+		break;
+	case MDSS_EVENT_DSI_PANEL_STATUS:
+		if (ctrl_pdata->check_status)
+			rc = ctrl_pdata->check_status(ctrl_pdata);
 		break;
 	default:
 		pr_debug("%s: unhandled event=%d\n", __func__, event);
@@ -1629,6 +1706,10 @@ static int mdss_dsi_ctrl_probe(struct platform_device *pdev)
 		goto error_pan_node;
 	}
 
+	ctrl_pdata->cmd_clk_ln_recovery_en =
+		of_property_read_bool(pdev->dev.of_node,
+			"qcom,dsi-clk-ln-recovery");
+
 	if (mdss_dsi_is_te_based_esd(ctrl_pdata)) {
 		rc = devm_request_irq(&pdev->dev,
 			gpio_to_irq(ctrl_pdata->disp_te_gpio),
@@ -1647,6 +1728,7 @@ static int mdss_dsi_ctrl_probe(struct platform_device *pdev)
 	return 0;
 
 error_pan_node:
+	mdss_dsi_unregister_bl_settings(ctrl_pdata);
 	of_node_put(dsi_pan_node);
 	i--;
 error_vreg:
@@ -2049,7 +2131,8 @@ int dsi_panel_device_register(struct device_node *pan_node,
 			pr_err("%s: Panel power on failed\n", __func__);
 			return rc;
 		}
-
+		if (ctrl_pdata->bklt_ctrl == BL_PWM)
+			ctrl_pdata->pwm_enabled = 1;
 		pinfo->blank_state = MDSS_PANEL_BLANK_UNBLANK;
 		mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 1);
 		ctrl_pdata->ctrl_state |=
@@ -2073,6 +2156,9 @@ int dsi_panel_device_register(struct device_node *pan_node,
 		mdss_debug_register_io("dsi1_phy", &ctrl_pdata->phy_io);
 		ctrl_pdata->ndx = 1;
 	}
+
+	panel_debug_register_base("panel",
+		ctrl_pdata->ctrl_base, ctrl_pdata->reg_size);
 
 	pr_debug("%s: Panel data initialized\n", __func__);
 	return 0;
