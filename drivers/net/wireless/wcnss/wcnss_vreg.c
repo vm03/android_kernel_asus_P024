@@ -234,7 +234,6 @@ int wcnss_get_iris_name(char *iris_name)
 }
 EXPORT_SYMBOL(wcnss_get_iris_name);
 
->>>>>>> caf/LA.BR.1.2.6_rb1.10
 int validate_iris_chip_id(u32 reg)
 {
 	int iris_id;

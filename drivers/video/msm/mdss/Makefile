@@ -52,8 +52,8 @@ obj-$(CONFIG_FB_MSM_MDSS) += mdss_fb.o mdss_util.o
 obj-$(CONFIG_COMPAT) += mdss_compat_utils.o
 
 # cadiz +++++
-ifeq ($(ASUS_PROJECT), Z380KL)
+#ifeq ($(ASUS_PROJECT), Z380KL)
 	obj-$(CONFIG_BACKLIGHT_LP85571) += lp85571.o
 	obj-$(CONFIG_SONY_CADIZ) += cadiz.o
-endif
+#endif
 # cadiz -----

@@ -110,11 +110,6 @@ static void wcd_mbhc_jack_report(struct wcd_mbhc *mbhc,
 		return;
 	}
 	
-	if (status == 1 || status == 3)
-		snd_soc_write(codec, MSM8X16_WCD_A_ANALOG_MBHC_DBNC_TIMER, 0x98);
-	else if (status == 0 && mask == 455)
-		snd_soc_write(codec, MSM8X16_WCD_A_ANALOG_MBHC_DBNC_TIMER, 0xc8);
-	
 	snd_soc_jack_report(jack, status, mask);
 }
 
@@ -548,18 +543,6 @@ static void wcd_mbhc_set_and_turnoff_hph_padac(struct wcd_mbhc *mbhc)
 	}
 	WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_HPH_PA_EN, 0);
 	usleep_range(wg_time * 1000, wg_time * 1000 + 50);
-}
-
-int wcd_mbhc_get_impedance(struct wcd_mbhc *mbhc, uint32_t *zl,
-			uint32_t *zr)
-{
-	*zl = mbhc->zl;
-	*zr = mbhc->zr;
-
-	if (*zl && *zr)
-		return 0;
-	else
-		return -EINVAL;
 }
 
 int wcd_mbhc_get_impedance(struct wcd_mbhc *mbhc, uint32_t *zl,

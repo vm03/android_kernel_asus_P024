@@ -1224,7 +1224,7 @@ static int msm_vfe32_axi_restart(struct vfe_device *vfe_dev,
 	msm_camera_io_w_mb(0x1, vfe_dev->vfe_base + 0x1D8);
 	/* Start AXI */
 	msm_camera_io_w(0x0, vfe_dev->vfe_base + 0x1D8);
-	vfe_dev->hw_info->vfe_ops.core_ops.reg_update(vfe_dev);
+//	vfe_dev->hw_info->vfe_ops.core_ops.reg_update(vfe_dev);
 	memset(&vfe_dev->error_info, 0, sizeof(vfe_dev->error_info));
 	atomic_set(&vfe_dev->error_info.overflow_state, NO_OVERFLOW);
 	if (enable_camif) {

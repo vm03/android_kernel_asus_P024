@@ -561,8 +561,6 @@ config MSM_PERFORMANCE
 	  It ensures that no more than a user specified number of CPUs stay
 	  online at any given point in time.
 
-<<<<<<< HEAD
-=======
 config MSM_PERFORMANCE_HOTPLUG_ON
         bool "Hotplug functionality through msm_performance turned on"
         depends on MSM_PERFORMANCE
@@ -573,7 +571,6 @@ config MSM_PERFORMANCE_HOTPLUG_ON
           compile out the nodes needed for core-control functionality through
           msm_performance.
 
->>>>>>> caf/LA.BR.1.2.6_rb1.10
 source "drivers/soc/qcom/memshare/Kconfig"
 
 endif # ARCH_MSM

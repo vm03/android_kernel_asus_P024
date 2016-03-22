@@ -1017,10 +1017,6 @@ static const struct wcd_mbhc_cb mbhc_cb = {
 	.extn_use_mb = msm8x16_wcd_use_mb,
 };
 
-static const uint32_t wcd_imped_val[] = {4, 8, 12, 16,
-					20, 24, 28, 32,
-					36, 40, 44, 48};
-
 void msm8x16_notifier_call(struct snd_soc_codec *codec,
 				  const enum wcd_notify_event event)
 {
