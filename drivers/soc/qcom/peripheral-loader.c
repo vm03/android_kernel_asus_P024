@@ -35,6 +35,7 @@
 #include <linux/dma-mapping.h>
 #include <soc/qcom/ramdump.h>
 #include <soc/qcom/subsystem_restart.h>
+#include <soc/qcom/socinfo.h>
 
 #include <asm/uaccess.h>
 #include <asm/setup.h>
@@ -555,8 +556,24 @@ static int pil_load_seg(struct pil_desc *desc, struct pil_seg *seg)
 	void *map_data = desc->map_data ? desc->map_data : &map_fw_info;
 
 	if (seg->filesz) {
-		snprintf(fw_name, ARRAY_SIZE(fw_name), "%s.b%02d",
-				desc->name, num);
+// Rubio+ add dynamic load firmware feature
+		/*snprintf(fw_name, ARRAY_SIZE(fw_name), "%s.b%02d",
+				desc->name, num);*/
+		if((strcmp(desc->name, "wcnss") == 0 ) || (strcmp(desc->name, "venus") == 0 )) {
+			if (cpu_is_msm8916()) {
+				snprintf(fw_name, ARRAY_SIZE(fw_name), "%s_8916.b%02d", desc->name, num);
+				pil_err(desc, "CPU is msm8916, prepare load %s\n", fw_name);
+			}
+			if (cpu_is_msm8929()) {
+				snprintf(fw_name, ARRAY_SIZE(fw_name), "%s_8929.b%02d", desc->name, num);
+				pil_err(desc, "CPU is msm8929, prepare load %s\n", fw_name);
+			}
+		} else {
+			snprintf(fw_name, ARRAY_SIZE(fw_name), "%s.b%02d",
+                                desc->name, num);
+		}
+// Rubio-
+
 		ret = request_firmware_direct(fw_name, desc->dev, seg->paddr,
 					      seg->filesz, desc->map_fw_mem,
 					      desc->unmap_fw_mem, map_data);
@@ -657,7 +674,22 @@ int pil_boot(struct pil_desc *desc)
 	pil_release_mmap(desc);
 
 	down_read(&pil_pm_rwsem);
-	snprintf(fw_name, sizeof(fw_name), "%s.mdt", desc->name);
+// Rubio+ add dynamic load firmware feature
+	/*snprintf(fw_name, sizeof(fw_name), "%s.mdt", desc->name);*/
+	if((strcmp(desc->name, "wcnss") == 0 ) || (strcmp(desc->name, "venus") == 0 )) {
+		if (cpu_is_msm8916()){
+			snprintf(fw_name, sizeof(fw_name), "%s_8916.mdt", desc->name);
+			pil_err(desc, "CPU is msm8916, prepare load %s\n", fw_name);
+		}
+		if (cpu_is_msm8929()){
+			snprintf(fw_name, sizeof(fw_name), "%s_8929.mdt", desc->name);
+			pil_err(desc, "CPU is msm8929, prepare load %s\n", fw_name);
+		}
+	} else {
+		snprintf(fw_name, sizeof(fw_name), "%s.mdt", desc->name);
+	}
+// Rubio-
+
 	ret = request_firmware(&fw, fw_name, desc->dev);
 	if (ret) {
 		pil_err(desc, "Failed to locate %s\n", fw_name);
@@ -783,7 +815,7 @@ EXPORT_SYMBOL(pil_shutdown);
  */
 void pil_free_memory(struct pil_desc *desc)
 {
-	struct pil_priv *priv = desc->priv;
+ 	struct pil_priv *priv = desc->priv;
 
 	if (priv->region) {
 		dma_free_attrs(desc->dev, priv->region_size,
