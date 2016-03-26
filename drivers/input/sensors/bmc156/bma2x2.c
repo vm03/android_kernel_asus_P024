@@ -8072,6 +8072,7 @@ exit:
 	return err;
 }
 
+#ifdef CONFIG_PM_SCREEN_STATE_NOTIFIER
 static void bma2x2_early_suspend(struct i2c_client *client)
 {
 	struct bma2x2_data *data = i2c_get_clientdata(client);
@@ -8144,7 +8145,7 @@ static int bma2x2_late_resume(struct i2c_client *client)
 
 	return 0;
 }
-
+#endif
 static int bma2x2_remove(struct i2c_client *client)
 {
 	struct bma2x2_data *data = i2c_get_clientdata(client);
@@ -8201,7 +8202,7 @@ static int bma2x2_suspend(struct i2c_client *client, pm_message_t mesg)
 
 	return 0;
 }
-/*
+
 static int bma2x2_resume(struct i2c_client *client)
 {
 	struct bma2x2_data *data = i2c_get_clientdata(client);
@@ -8222,7 +8223,7 @@ static int bma2x2_resume(struct i2c_client *client)
 
 	return 0;
 }
-*/
+
 #else
 
 #define bma2x2_suspend      NULL
@@ -8272,7 +8273,7 @@ static struct i2c_driver bma2x2_driver = {
 	.id_table   = bma2x2_id,
 	.probe      = bma2x2_probe,
 	.remove     = bma2x2_remove,
-	//.shutdown   = bma2x2_shutdown,
+	.shutdown   = bma2x2_shutdown,
 };
 
 static int __init BMA2X2_init(void)

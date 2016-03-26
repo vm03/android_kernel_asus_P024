@@ -218,8 +218,8 @@ static void bmm_dump_reg(struct i2c_client *client);
 static int bmm_wakeup(struct i2c_client *client);
 static int bmm_check_chip_id(struct i2c_client *client);
 
-static int bmm_pre_suspend(struct i2c_client *client);
-static int bmm_post_resume(struct i2c_client *client);
+//static int bmm_pre_suspend(struct i2c_client *client);
+//static int bmm_post_resume(struct i2c_client *client);
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 static void bmm_early_suspend(struct early_suspend *handler);
@@ -1719,7 +1719,7 @@ exit_err_clean:
 
 	return err;
 }
-
+/*
 static int bmm_pre_suspend(struct i2c_client *client)
 {
 	int err = 0;
@@ -1753,7 +1753,7 @@ static int bmm_post_resume(struct i2c_client *client)
 
 	return err;
 }
-
+*/
 #ifdef CONFIG_HAS_EARLYSUSPEND
 static void bmm_early_suspend(struct early_suspend *handler)
 {
@@ -1790,7 +1790,7 @@ static void bmm_late_resume(struct early_suspend *handler)
 
 	mutex_unlock(&client_data->mutex_power_mode);
 }
-#else
+//#else
 static int bmm_suspend(struct i2c_client *client)
 {
 	int err = 0;
@@ -1923,8 +1923,8 @@ static struct i2c_driver bmm_driver = {
 	.remove = bmm_remove,
 	.shutdown = bmm_shutdown,
 #ifndef CONFIG_PM_SCREEN_STATE_NOTIFIER
-	.suspend = bmm_suspend,
-	.resume = bmm_resume,
+//	.suspend = bmm_suspend,
+//	.resume = bmm_resume,
 #endif
 };
 
