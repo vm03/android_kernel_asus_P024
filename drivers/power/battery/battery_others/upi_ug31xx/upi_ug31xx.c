@@ -592,7 +592,7 @@ EXPORT_SYMBOL(upi_ug31xx_attach);
 /// Alarm function
 /// ===============================================================================================
 
-#ifdef  UG31XX_ALARM_FUNCTION
+#if 0 //UG31XX_ALARM_FUNCTION
 
 static void upi_ug31xx_alarm_callback(void)
 {
