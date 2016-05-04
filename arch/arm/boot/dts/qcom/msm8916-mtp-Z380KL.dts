@@ -124,6 +124,17 @@
 		qcom,panel-maxy = <2084>;
 		qcom,key-codes = <158 139 172 217>;
 	};
+
+	ramoops {
+		compatible = "ramoops";
+		status = "ok";
+
+		android,ramoops-buffer-start = <0x8c400000>;
+		android,ramoops-buffer-size = <0x100000>;
+		android,ramoops-console-size = <0x80000>;
+		android,ramoops-record-size = <0x20000>;
+		android,ramoops-dump-oops = <0x1>;
+	};
 };
 
 /* Display */
