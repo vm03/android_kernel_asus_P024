@@ -26,7 +26,7 @@ config SENSORS_BMA2X2_ENABLE_INT2
 
 config SIG_MOTION
 	tristate "support significant motion sensor function"
-	depends on SENSORS_BMA2X2  && ( SENSORS_BMA2X2_ENABLE_INT1 || SENSORS_BMA2X2_ENABLE_INT2)
+	depends on SENSORS_BMA2X2_Z300KL
 	help
 	 If you say yes here, if you want to support Bosch significant motion sensor function
 
