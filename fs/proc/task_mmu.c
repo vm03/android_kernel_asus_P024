@@ -546,7 +546,7 @@ static void smaps_pte_entry(pte_t ptent, unsigned long addr,
 	}
 }
 
-int smaps_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
+static int smaps_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 			   struct mm_walk *walk)
 {
 	struct mem_size_stats *mss = walk->private;
@@ -1168,8 +1168,7 @@ out:
 
 static int pagemap_open(struct inode *inode, struct file *file)
 {
-	/* do not disclose physical addresses to unprivileged
-	   userspace (closes a rowhammer attack vector) */
+	/* do not disclose physical addresses: attack vector */
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 	return 0;
