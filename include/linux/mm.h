@@ -992,8 +992,6 @@ struct mm_walk {
 	void *private;
 };
 
-int smaps_pte_range(pmd_t *pmd, unsigned long addr, 
-                unsigned long end,struct mm_walk *walk);
 int walk_page_range(unsigned long addr, unsigned long end,
 		struct mm_walk *walk);
 void free_pgd_range(struct mmu_gather *tlb, unsigned long addr,
