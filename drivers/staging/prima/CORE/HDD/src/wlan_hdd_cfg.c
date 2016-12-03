@@ -2636,6 +2636,21 @@ REG_VARIABLE( CFG_EXTSCAN_ENABLE, WLAN_PARAM_Integer,
              CFG_ENABLE_LPWR_IMG_TRANSITION_MIN,
              CFG_ENABLE_LPWR_IMG_TRANSITION_MAX ),
 
+   REG_VARIABLE( CFG_ENABLE_CONSECUTIVE_BMISS_NAME, WLAN_PARAM_Integer,
+             hdd_config_t, enable_conc_bmiss,
+             VAR_FLAGS_OPTIONAL | VAR_FLAGS_RANGE_CHECK_ASSUME_DEFAULT,
+             CFG_ENABLE_CONSECUTIVE_BMISS_DEFAULT,
+             CFG_ENABLE_CONSECUTIVE_BMISS_MIN,
+             CFG_ENABLE_CONSECUTIVE_BMISS_MAX ),
+
+   REG_VARIABLE( CFG_ENABLE_UNITS_BEACON_WAIT_NAME, WLAN_PARAM_Integer,
+             hdd_config_t, enable_units_bwait,
+             VAR_FLAGS_OPTIONAL | VAR_FLAGS_RANGE_CHECK_ASSUME_DEFAULT,
+             CFG_ENABLE_UNITS_BEACON_WAIT_DEFAULT,
+             CFG_ENABLE_UNITS_BEACON_WAIT_MIN,
+             CFG_ENABLE_UNITS_BEACON_WAIT_MAX ),
+
+
 #ifdef WLAN_ACTIVEMODE_OFFLOAD_FEATURE
    REG_VARIABLE( CFG_ACTIVEMODE_OFFLOAD_ENABLE, WLAN_PARAM_Integer,
               hdd_config_t, fEnableActiveModeOffload,
@@ -2853,6 +2868,13 @@ REG_VARIABLE( CFG_EXTSCAN_ENABLE, WLAN_PARAM_Integer,
                  CFG_PER_ROAM_SCAN_CCA_ENABLED_DEFAULT,
                  CFG_PER_ROAM_SCAN_CCA_ENABLED_MIN,
                  CFG_PER_ROAM_SCAN_CCA_ENABLED_MAX),
+
+   REG_VARIABLE(CFG_PER_ROAM_FULL_SCAN_RSSI_THRESHOLD, WLAN_PARAM_SignedInteger,
+                 hdd_config_t, PERRoamFullScanThreshold,
+                 VAR_FLAGS_OPTIONAL | VAR_FLAGS_RANGE_CHECK_ASSUME_DEFAULT,
+                 CFG_PER_ROAM_FULL_SCAN_RSSI_THRESHOLD_DEFAULT,
+                 CFG_PER_ROAM_FULL_SCAN_RSSI_THRESHOLD_MIN,
+                 CFG_PER_ROAM_FULL_SCAN_RSSI_THRESHOLD_MAX),
 #endif
 
    REG_VARIABLE( CFG_ENABLE_ADAPT_RX_DRAIN_NAME, WLAN_PARAM_Integer,
@@ -4096,6 +4118,8 @@ static void print_hdd_cfg(hdd_context_t *pHddCtx)
   VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO_HIGH, "Name = [ignoreDynamicDtimInP2pMode] Value = [%u] ",pHddCtx->cfg_ini->ignoreDynamicDtimInP2pMode);
   VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO_HIGH, "Name = [enableRxSTBC] Value = [%u] ",pHddCtx->cfg_ini->enableRxSTBC);
   VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO_HIGH, "Name = [gEnableLpwrImgTransition] Value = [%u] ",pHddCtx->cfg_ini->enableLpwrImgTransition);
+  VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO_HIGH, "Name = [enable_conc_bmiss] Value = [%u] ",pHddCtx->cfg_ini->enable_conc_bmiss);
+  VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO_HIGH, "Name = [enable_units_bwait] Value = [%u] ",pHddCtx->cfg_ini->enable_units_bwait);
   VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO_HIGH, "Name = [gEnableSSR] Value = [%u] ",pHddCtx->cfg_ini->enableSSR);
   VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO_HIGH, "Name = [gEnableVhtFor24GHzBand] Value = [%u] ",pHddCtx->cfg_ini->enableVhtFor24GHzBand);
 
@@ -4246,6 +4270,10 @@ static void print_hdd_cfg(hdd_context_t *pHddCtx)
   VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO_HIGH,
           "Name = [gPERRoamCCAEnabled] Value = [%u] ",
           pHddCtx->cfg_ini->isPERRoamCCAEnabled);
+
+  VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO_HIGH,
+          "Name = [gPERRoamFullScanThreshold] Value = [%u] ",
+          pHddCtx->cfg_ini->PERRoamFullScanThreshold);
 
   VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO_HIGH,
           "Name = [gPERRoamScanInterval] Value = [%lu] ",
@@ -5384,6 +5412,20 @@ v_BOOL_t hdd_update_config_dat( hdd_context_t *pHddCtx )
       fStatus = FALSE;
       hddLog(LOGE, "Could not pass on WNI_CFG_ENABLE_LPWR_IMG_TRANSITION to CCM");
    }
+   if(ccmCfgSetInt(pHddCtx->hHal, WNI_CFG_ENABLE_CONC_BMISS,
+                   pConfig->enable_conc_bmiss, NULL, eANI_BOOLEAN_FALSE)
+       ==eHAL_STATUS_FAILURE)
+   {
+      fStatus = FALSE;
+      hddLog(LOGE, "Could not pass on WNI_CFG_ENABLE_CONC_BMISS to CCM");
+   }
+   if(ccmCfgSetInt(pHddCtx->hHal, WNI_CFG_ENABLE_UNITS_BWAIT,
+                   pConfig->enable_units_bwait, NULL, eANI_BOOLEAN_FALSE)
+       ==eHAL_STATUS_FAILURE)
+   {
+      fStatus = FALSE;
+      hddLog(LOGE, "Could not pass on WNI_CFG_ENABLE_UNITS_BWAIT to CCM");
+   }
 
    if (ccmCfgSetInt(pHddCtx->hHal, WNI_CFG_ENABLE_MCC_ADAPTIVE_SCHED, pConfig->enableMCCAdaptiveScheduler,
       NULL, eANI_BOOLEAN_FALSE)==eHAL_STATUS_FAILURE)
@@ -6061,6 +6103,8 @@ VOS_STATUS hdd_set_sme_config( hdd_context_t *pHddCtx )
            pConfig->waitPeriodForNextPERScan;
    smeConfig->csrConfig.PERtimerThreshold = pConfig->PERtimerThreshold;
    smeConfig->csrConfig.isPERRoamCCAEnabled = pConfig->isPERRoamCCAEnabled;
+   smeConfig->csrConfig.PERRoamFullScanThreshold =
+                   pConfig->PERRoamFullScanThreshold * -1;
    smeConfig->csrConfig.PERroamTriggerPercent = pConfig->PERroamTriggerPercent;
 
 

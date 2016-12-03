@@ -931,7 +931,7 @@ typedef enum
  * Max: Max rate for 1x1 transmission
  */
 #define CFG_PER_ROAM_SCAN_RATE_UP_THRESHOLD           "gPERRoamUpThresholdRate"
-#define CFG_PER_ROAM_SCAN_RATE_UP_THRESHOLD_MIN       (10)
+#define CFG_PER_ROAM_SCAN_RATE_UP_THRESHOLD_MIN       (20)
 #define CFG_PER_ROAM_SCAN_RATE_UP_THRESHOLD_MAX       (3330)
 #define CFG_PER_ROAM_SCAN_RATE_UP_THRESHOLD_DEFAULT   (400)
 
@@ -950,13 +950,13 @@ typedef enum
  * Value : seconds
  */
 #define CFG_PER_ROAM_SCAN_WAIT_TIME                   "gPERRoamScanInterval"
-#define CFG_PER_ROAM_SCAN_WAIT_TIME_MIN               (0)
+#define CFG_PER_ROAM_SCAN_WAIT_TIME_MIN               (10)
 #define CFG_PER_ROAM_SCAN_WAIT_TIME_MAX               (3600)
 #define CFG_PER_ROAM_SCAN_WAIT_TIME_DEFAULT           (300)
 
 /* Time to collect stats to trigger roam scan for Tx path */
 #define CFG_PER_ROAM_SCAN_PER_TIME_THRESHOLD          "gPERRoamStatsTime"
-#define CFG_PER_ROAM_SCAN_PER_TIME_THRESHOLD_MIN      (0)
+#define CFG_PER_ROAM_SCAN_PER_TIME_THRESHOLD_MIN      (5)
 #define CFG_PER_ROAM_SCAN_PER_TIME_THRESHOLD_MAX      (25)
 #define CFG_PER_ROAM_SCAN_PER_TIME_THRESHOLD_DEFAULT  (10)
 
@@ -989,6 +989,11 @@ typedef enum
 #define CFG_PER_ROAM_SCAN_CCA_ENABLED_MIN             (0)
 #define CFG_PER_ROAM_SCAN_CCA_ENABLED_MAX             (1)
 #define CFG_PER_ROAM_SCAN_CCA_ENABLED_DEFAULT         (0)
+
+#define CFG_PER_ROAM_FULL_SCAN_RSSI_THRESHOLD         "gPERRoamFullScanRssiDiffThreshold"
+#define CFG_PER_ROAM_FULL_SCAN_RSSI_THRESHOLD_MIN     (5)
+#define CFG_PER_ROAM_FULL_SCAN_RSSI_THRESHOLD_MAX     (50)
+#define CFG_PER_ROAM_FULL_SCAN_RSSI_THRESHOLD_DEFAULT (10)
 #endif
 
 #define CFG_QOS_WMM_PKT_CLASSIFY_BASIS_NAME                "PktClassificationBasis" // DSCP or 802.1Q
@@ -2020,7 +2025,7 @@ static __inline tANI_U32 defHddRateToDefCfgRate( tANI_U32 defRateIndex )
 #define CFG_TDLS_EXTERNAL_CONTROL                   "gTDLSExternalControl"
 #define CFG_TDLS_EXTERNAL_CONTROL_MIN               (0)
 #define CFG_TDLS_EXTERNAL_CONTROL_MAX               (1)
-#define CFG_TDLS_EXTERNAL_CONTROL_DEFAULT           (0)
+#define CFG_TDLS_EXTERNAL_CONTROL_DEFAULT           (1)
 
 #define CFG_TDLS_OFF_CHANNEL_SUPPORT_ENABLE          "gEnableTDLSOffChannel"
 #define CFG_TDLS_OFF_CHANNEL_SUPPORT_ENABLE_MIN      (0)
@@ -2037,6 +2042,17 @@ static __inline tANI_U32 defHddRateToDefCfgRate( tANI_U32 defRateIndex )
 #define CFG_TDLS_SCAN_COEX_SUPPORT_ENABLE_MAX        (1)
 #define CFG_TDLS_SCAN_COEX_SUPPORT_ENABLE_DEFAULT    (0)
 
+/* Enable/Disable Consecutive Beacon miss */
+#define CFG_ENABLE_CONSECUTIVE_BMISS_NAME        "gEnableConcBmiss"
+#define CFG_ENABLE_CONSECUTIVE_BMISS_MIN         ( 2 )
+#define CFG_ENABLE_CONSECUTIVE_BMISS_MAX         ( 10 )
+#define CFG_ENABLE_CONSECUTIVE_BMISS_DEFAULT     ( 5 )
+
+/* Enable/Disable units of beacon wait time */
+#define CFG_ENABLE_UNITS_BEACON_WAIT_NAME        "gEnableUnitBwait"
+#define CFG_ENABLE_UNITS_BEACON_WAIT_MIN         ( 2 )
+#define CFG_ENABLE_UNITS_BEACON_WAIT_MAX         ( 10 )
+#define CFG_ENABLE_UNITS_BEACON_WAIT_DEFAULT     ( 2 )
 
 /* if gEnableTDLSScan
  * 0: Same as gEnableTDLSScanCoexistence ; driver will do disconnect if
@@ -3069,6 +3085,7 @@ typedef struct
    v_BOOL_t                     isPERRoamEnabled;
    v_BOOL_t                     isPERRoamRxPathEnabled;
    v_BOOL_t                     isPERRoamCCAEnabled;
+   v_S15_t                      PERRoamFullScanThreshold;
    v_U16_t                      rateUpThreshold;
    v_U16_t                      rateDownThreshold;
    v_U16_t                      PERroamTriggerPercent;
@@ -3246,6 +3263,8 @@ typedef struct
    v_BOOL_t                    fEnableActiveModeOffload;
 #endif
    v_U32_t                     enableLpwrImgTransition;
+   v_U8_t                      enable_conc_bmiss;
+   v_U8_t                      enable_units_bwait;
    v_U8_t                      scanAgingTimeout;
    v_BOOL_t                    enableTxLdpc;
    v_U8_t                      disableLDPCWithTxbfAP;
