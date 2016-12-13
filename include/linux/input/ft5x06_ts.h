@@ -3,7 +3,7 @@
  * FocalTech ft5x06 TouchScreen driver header file.
  *
  * Copyright (c) 2010  Focal tech Ltd.
- * Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -62,6 +62,9 @@ struct ft5x06_ts_platform_data {
 	bool ignore_id_check;
 	int (*power_init) (bool);
 	int (*power_on) (bool);
+	bool psensor_support;
+	bool gesture_support;
+	bool resume_in_workqueue;
 };
 
 #endif
