@@ -238,24 +238,6 @@ static const char *getCoverString[] = {
 	"***COVER_OUT***",
 };
 
-static const char *getChargerString[] = {
-	"***POWER_SUPPLY_TYPE_UNKNOWN***",
-	"***POWER_SUPPLY_TYPE_BATTERY***",
-	"***POWER_SUPPLY_TYPE_UPS***",
-	"***POWER_SUPPLY_TYPE_MAINS***",
-	"***POWER_SUPPLY_TYPE_USB***",
-	"***POWER_SUPPLY_TYPE_USB_DCP***",
-	"***POWER_SUPPLY_TYPE_USB_CDP***",
-	"***POWER_SUPPLY_TYPE_USB_ACA***",
-	"***POWER_SUPPLY_TYPE_WIRELESS***",
-	"***POWER_SUPPLY_TYPE_BMS***",
-	"***POWER_SUPPLY_TYPE_USB_PARALLEL***",
-	"***POWER_SUPPLY_TYPE_PACK_BATTERY***",
-	"***POWER_SUPPLY_TYPE_PACK_AC***",
-	"***POWER_SUPPLY_TYPE_OTG***",
-	"***POWER_SUPPLY_TYPE_OTGOUT***",
-};
-
 static const char *getBackString[] = {
 	"*tnw*BACK_UNKNOWN***",
 	"*tnw*AUDIO_COVER***",
@@ -292,12 +274,10 @@ EXPORT_SYMBOL(cable_status_unregister_client);
 int cable_status_notifier_call_chain(enum power_supply_type chgtype,void *v)
 {
 	int ret = 0;
-	printk(KERN_INFO "%s status %s +++\n",__func__, getChargerString[chgtype]);
 	if(cable_type!= chgtype){
 
 		cable_type = chgtype;
 		ret = atomic_notifier_call_chain(&cable_status_notifier_list, chgtype, v);
-		printk(KERN_INFO "%s ret %d ---\n",__func__, ret);
 	}
 	return ret;
 }
