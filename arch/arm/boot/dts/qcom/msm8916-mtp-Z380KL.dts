@@ -145,10 +145,15 @@
 #include "dsi-panel-ili6136s-800x1280-video.dtsi"
 #include "dsi-panel-nt35521-800x1280-video.dtsi"
 #include "dsi-panel-rm27013-800x1280-video.dtsi"
+#include "dsi-panel-rm68200-800x1280-video.dtsi"
+#include "dsi-panel-kd-rm68200-800x1280-video.dtsi"
+
 
 &mdss_dsi0 {
 	qcom,dsi-pref-prim-pan-ili6136s = <&dsi_ili6136s_800x1280_video>;
 	qcom,dsi-pref-prim-pan-rm27013 = <&dsi_rm27013_800x1280_video>;
+	qcom,dsi-pref-prim-pan-rm68200 = <&dsi_rm68200_800x1280_video>;
+	qcom,dsi-pref-prim-pan-kd-rm68200 = <&dsi_kd_rm68200_800x1280_video>;
 	pinctrl-names = "mdss_default", "mdss_sleep";
 	pinctrl-0 = <&mdss_dsi_active &mdss_te_active>;
 	pinctrl-1 = <&mdss_dsi_suspend &mdss_te_suspend>;
@@ -158,16 +163,12 @@
 	/delete-property/ qcom,platform-bklight-en-gpio;
 
 	// EVB ++++
-	qcom,dsi-pref-prim-pan-nt35521 = <&dsi_nt35521_800x1280_video>;
 	qcom,platform-enable-gpio-evb = <&msm_gpio 97 0>;
 	qcom,platform-bklight-en-gpio-evb = <&msm_gpio 98 0>;
 	// EVB ----
 
 	qcom,platform-lcm-id2 = <&msm_gpio 102 0>;
-};
-
-&dsi_nt35521_800x1280_video {
-	qcom,cont-splash-enabled;
+	com,platform-lcm-id0 = <&msm_gpio 100 0>;
 };
 
 &dsi_ili6136s_800x1280_video {
@@ -175,6 +176,14 @@
 };
 
 &dsi_rm27013_800x1280_video {
+	qcom,cont-splash-enabled;
+};
+
+&dsi_rm68200_800x1280_video {
+	qcom,cont-splash-enabled;
+};
+
+&dsi_kd_rm68200_800x1280_video {
 	qcom,cont-splash-enabled;
 };
 

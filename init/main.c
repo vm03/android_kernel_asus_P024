@@ -94,11 +94,6 @@ extern void fork_init(unsigned long);
 extern void mca_init(void);
 extern void sbus_init(void);
 extern void radix_tree_init(void);
-// Flysky150528: create /proc/printk_state
-#ifdef CONFIG_PRINTK
-extern void create_printk_proc(void);
-#endif
-
 #ifndef CONFIG_DEBUG_RODATA
 static inline void mark_rodata_ro(void) { }
 #endif
@@ -521,6 +516,7 @@ int project_id;
 int hardware_id;
 int tp_id;
 int evb_id;
+int second_source_LCM;
 static int __init check_pcb_id(char *p)
 {
 	if (p) {
@@ -571,6 +567,16 @@ static int __init check_evb_id(char *p)
 }
 early_param("evb_id", check_evb_id);
 
+static int __init check_second_source_LCM(char *p)
+{
+        if (p) {
+                sscanf(p, "%d", &second_source_LCM);
+                printk(KERN_ERR "%s:second_source_LCM = %d\n", __func__, second_source_LCM);
+        }
+        return 0;
+}
+early_param("second_source_LCM", check_second_source_LCM);
+
 module_param(hardware_id, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(HW_VERSION, "HW_ID judgement");
 int Read_HW_ID(void)
@@ -611,6 +617,15 @@ int Read_EVB_ID(void)
         return evb_id;
 }
 EXPORT_SYMBOL(Read_EVB_ID);
+
+module_param(second_source_LCM, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(second_source_LCM_VERSION, "PCB_ID judgement");
+int Read_second_source_LCM(void)
+{
+        printk(KERN_INFO "second_source_LCM = 0x%x \n", second_source_LCM);
+        return second_source_LCM;
+}
+EXPORT_SYMBOL(Read_second_source_LCM);
 //Jui add --
 
 asmlinkage void __init start_kernel(void)
@@ -1005,12 +1020,6 @@ static int __ref kernel_init(void *unused)
 	numa_default_policy();
 
 	flush_delayed_fput();
-
-// Flysky150528: create /proc/printk_state
-#ifdef CONFIG_PRINTK
-        create_printk_proc();
-#endif
-
 
 	if (ramdisk_execute_command) {
 		if (!run_init_process(ramdisk_execute_command))

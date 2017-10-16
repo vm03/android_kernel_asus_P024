@@ -36,6 +36,7 @@
 // cadiz +++++
 #if defined(ASUS_PROJECT_Z380KL_DISPLAY)
 int lcm_id2 = 0;
+int lcm_id0 = 0;
 extern void cadiz_suspend(void);
 extern void cadiz_resume(void);
 extern void cadiz_rest_gpio(void);
@@ -1470,12 +1471,31 @@ static struct device_node *mdss_dsi_pref_prim_panel(
 					__func__, __LINE__);
 
 #if defined(ASUS_PROJECT_Z380KL_DISPLAY)
-		if(lcm_id2)
+		pr_err("%s : gpio100 = %d gpio102 = %d\n", __func__, lcm_id0, lcm_id2);
+		if(lcm_id0) {
+			printk("[DISPLAY] %s rm68200\n", __func__);
 			dsi_pan_node = of_parse_phandle(pdev->dev.of_node,
-							"qcom,dsi-pref-prim-pan-rm27013", 0);
-		else
-			dsi_pan_node = of_parse_phandle(pdev->dev.of_node,
-							"qcom,dsi-pref-prim-pan-ili6136s", 0);
+							"qcom,dsi-pref-prim-pan-rm68200", 0);
+		}
+		else {
+			if(lcm_id2) {
+				printk("[DISPLAY] %s rm72013\n", __func__);
+				dsi_pan_node = of_parse_phandle(pdev->dev.of_node,
+								"qcom,dsi-pref-prim-pan-rm27013", 0);
+			}
+			else {
+				if(Read_second_source_LCM()) {
+					printk("[DISPLAY] %s kd rm68200\n", __func__);
+					dsi_pan_node = of_parse_phandle(pdev->dev.of_node,
+									"qcom,mdss_dsi_kd_rm68200_800x1280_video", 0);
+				}
+				else {
+					printk("[DISPLAY] %s ili6136s\n", __func__);
+					dsi_pan_node = of_parse_phandle(pdev->dev.of_node,
+									"qcom,dsi-pref-prim-pan-ili6136s", 0);
+				}
+			}
+		}
 #else
 	dsi_pan_node = of_parse_phandle(pdev->dev.of_node,
 						"qcom,dsi-pref-prim-pan", 0);
@@ -1566,7 +1586,18 @@ end:
 
 static ssize_t lcm_id_state_read_proc (struct file *file, char __user *page, size_t size, loff_t *ppos)
 {
-	return sprintf(page, "%d\n", lcm_id2);
+	int panel_id = 0;
+
+	if(lcm_id0)
+		panel_id = 1;	//AUO
+	else {
+		if(lcm_id2)
+			panel_id = 1;	//AUO
+		else
+			panel_id = Read_second_source_LCM() ? 2 : 0;	//KD : CPT
+	}
+
+	return sprintf(page, "%d\n", panel_id);
 }
 
 static const struct file_operations proc_lcm_id_struct =
@@ -1877,7 +1908,7 @@ int dsi_panel_device_register(struct device_node *pan_node,
 	const char *data;
 	struct resource *res;
 #if defined(ASUS_PROJECT_Z380KL_DISPLAY)
-	int gpio_102;
+	int gpio_100, gpio_102;
 #endif
 
 	mipi  = &(pinfo->mipi);
@@ -2014,12 +2045,19 @@ int dsi_panel_device_register(struct device_node *pan_node,
 		ctrl_pdata->bklt_en_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
 			"qcom,platform-bklight-en-gpio", 0);
 
+		gpio_100 = of_get_named_gpio(ctrl_pdev->dev.of_node,
+				 "qcom,platform-lcm-id0", 0);
+		if (!gpio_is_valid(gpio_100))
+			pr_err("%s:%d, lcm_id0 gpio not specified\n",
+							__func__, __LINE__);
+
 		gpio_102 = of_get_named_gpio(ctrl_pdev->dev.of_node,
 				 "qcom,platform-lcm-id2", 0);
 		if (!gpio_is_valid(gpio_102))
 			pr_err("%s:%d, lcm_id2 gpio not specified\n",
 							__func__, __LINE__);
 		lcm_id2 = gpio_get_value(gpio_102);
+		lcm_id0 = gpio_get_value(gpio_100);
 #else
 	ctrl_pdata->bklt_en_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
 		"qcom,platform-bklight-en-gpio", 0);

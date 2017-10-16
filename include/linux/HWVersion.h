@@ -7,3 +7,4 @@
 
 extern int Read_HW_ID(void);
 extern int Read_PROJ_ID(void);
+extern int Read_second_source_LCM(void);
