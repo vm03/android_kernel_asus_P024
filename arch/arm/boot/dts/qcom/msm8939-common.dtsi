@@ -100,6 +100,15 @@
 			reg = <0x0 0x83000000 0x0 0x2000000>;
 			label = "cont_splash_mem";
 		};
+
+		ramoops_mem: ramoops_region@b8b00000 {
+			linux,reserve-contiguous-region;
+			linux,reserve-region;
+			linux,remove-completely;
+			reg = <0x0 0x9ff00000 0x0 0x100000>;
+			label = "ramoops_mem";
+		};
+
 	};
 
 	soc: soc { };
