@@ -28,10 +28,6 @@
 
 #define L2_HS_STS_SET	0x200
 
-static struct work_struct dummy_vote_work;
-static struct workqueue_struct *lpm_wa_wq;
-static bool lpm_wa_cx_turbo_unvote;
-
 static struct work_struct lpm_wa_work;
 static struct workqueue_struct *lpm_wa_wq;
 static bool skip_l2_spm;
@@ -47,29 +43,6 @@ cpumask_t l1_l2_offline_mask;
 cpumask_t offline_mask;
 struct resource *l1_l2_gcc_res;
 uint32_t l2_status = -1;
-
-/* While exiting from RPM assisted power collapse on some targets like MSM8939
- * the CX is bumped to turbo mode by RPM. To reduce the power impact, APSS
- * low power driver need to remove the CX turbo vote.
- */
-
-/*
- * lpm_wa_cx_unvote_send(): Unvote for CX turbo mode
- */
-void lpm_wa_cx_unvote_send(void)
-{
-	if (lpm_wa_cx_turbo_unvote)
-		queue_work(lpm_wa_wq, &dummy_vote_work);
-}
-EXPORT_SYMBOL(lpm_wa_cx_unvote_send);
-
-static int lpm_wa_cx_unvote_exit(void)
-{
-	if (lpm_wa_wq)
-		destroy_workqueue(lpm_wa_wq);
-
-	return 0;
-}
 
 static int lpm_wa_callback(struct notifier_block *cpu_nb,
 	unsigned long action, void *hcpu)
@@ -323,8 +296,6 @@ static int lpm_wa_probe(struct platform_device *pdev)
 static int lpm_wa_remove(struct platform_device *pdev)
 {
 	int ret = 0;
-	if (lpm_wa_cx_turbo_unvote)
-		ret = lpm_wa_cx_unvote_exit();
 
 	return ret;
 }
