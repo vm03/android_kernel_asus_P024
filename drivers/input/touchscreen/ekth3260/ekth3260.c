@@ -340,7 +340,7 @@ struct elan_ktf_ts_data
 static struct elan_ktf_ts_data *private_ts;
 static int __fw_packet_handler(struct i2c_client *client);
 static int elan_ktf_ts_rough_calibrate(struct i2c_client *client);
-#if 0
+#if 1
 static int elan_ktf_ts_resume(struct i2c_client *client);
 static int elan_ktf_ts_suspend(struct i2c_client *client, pm_message_t mesg); // mark by leo for early-suspend
 #endif
@@ -4041,7 +4041,7 @@ static int ektf_proc_write(struct file *file, const char *buffer, unsigned long 
 }
 #endif // #ifdef _ENABLE_DBG_LEV
 
-#if 0
+#if 1
 #if defined(CONFIG_FB)
 static int fb_notifier_callback(struct notifier_block *self,
                                 unsigned long event, void *data)
@@ -5150,7 +5150,7 @@ static int elan_ktf_ts_probe(struct i2c_client *client,
     }
 #endif // #ifdef _ENABLE_DBG_LEVEL
 
-#if 0
+#if 1
 #if defined(CONFIG_FB)
     private_ts->fb_notif.notifier_call = fb_notifier_callback;
 
@@ -5222,7 +5222,7 @@ static int elan_ktf_ts_remove(struct i2c_client *client)
     return 0;
 }
 
-#ifdef CONFIG_PM_SCREEN_STATE_NOTIFIER
+#ifndef CONFIG_PM_SCREEN_STATE_NOTIFIER
 static int elan_ktf_ts_set_power_state(struct i2c_client *client, int state)
 {
     uint8_t cmd[] = {CMD_W_PKT, 0x50, 0x00, 0x01};
@@ -5268,7 +5268,7 @@ static int elan_ktf_ts_get_power_state(struct i2c_client *client)
 }
 #endif
 
-#ifdef CONFIG_PM_SCREEN_STATE_NOTIFIER
+#ifndef CONFIG_PM_SCREEN_STATE_NOTIFIER
 static int elan_ktf_ts_suspend(struct i2c_client *client, pm_message_t mesg)
 {
     int rc = 0, ret = 0;
@@ -5402,8 +5402,8 @@ static struct i2c_driver ektf_ts_driver =
 {
     .probe		= elan_ktf_ts_probe,
     .remove		= elan_ktf_ts_remove,
-    //.suspend	= elan_ktf_ts_suspend,
-    //.resume		= elan_ktf_ts_resume,
+    .suspend	= elan_ktf_ts_suspend,
+    .resume		= elan_ktf_ts_resume,
     .id_table	= elan_ktf_ts_id,
     .driver		= {
         .name = ELAN_KTF_NAME,
